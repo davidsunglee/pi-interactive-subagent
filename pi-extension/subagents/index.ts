@@ -1164,7 +1164,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
 
         // Render via Box for background + padding, with blank line above for separation
-        const box = new Box(1, 0, bgFn);
+        const box = new Box(1, 1, bgFn);
         box.addChild(new Text(contentLines.join("\n"), 0, 0));
         return ["", ...box.render(width)];
       }
