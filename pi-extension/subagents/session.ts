@@ -171,4 +171,3 @@ export function mergeNewEntries(
   }
   return entries;
 }
-const unused = "hello";
