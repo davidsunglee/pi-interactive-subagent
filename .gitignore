@@ -1,5 +1,8 @@
 node_modules/
+
 .pi/*
+!.pi/plans/
 !.pi/skills/
+!.pi/specs/
+!.pi/todos/
 !.pi/settings.json
-!.pi/designs/
