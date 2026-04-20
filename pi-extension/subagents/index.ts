@@ -177,6 +177,16 @@ function parseSessionMode(value: string | undefined): SubagentSessionMode | unde
   return undefined;
 }
 
+export function thinkingToEffort(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const v = value.toLowerCase().trim();
+  if (v === "off" || v === "minimal" || v === "low") return "low";
+  if (v === "medium") return "medium";
+  if (v === "high") return "high";
+  if (v === "xhigh") return "max";
+  return undefined;
+}
+
 function parseAgentDefinition(content: string, fallbackName: string): AgentDefinition | null {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
