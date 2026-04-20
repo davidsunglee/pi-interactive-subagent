@@ -1,0 +1,57 @@
+import type { Static, TObject } from "@sinclair/typebox";
+import { Type } from "@sinclair/typebox";
+
+export const OrchestrationTaskSchema = Type.Object({
+  name: Type.Optional(Type.String({ description: "Widget label; auto-generated if omitted." })),
+  agent: Type.String({ description: "Agent definition name." }),
+  task: Type.String({ description: "Task string; may contain {previous} in serial mode." }),
+  // Fields below mirror the upstream `SubagentParams` surface. Orchestration
+  // wrappers are thin over `launchSubagent`, so any field `launchSubagent`
+  // already accepts is plumbed through here too — otherwise the wrappers
+  // would silently reduce the API surface relative to the bare `subagent`
+  // tool. Kept in sync with `SubagentParams` in `pi-extension/subagents/index.ts`.
+  cli: Type.Optional(Type.String({ description: "'pi' (default) or 'claude'. Free-form string; unknown values fall back to the pi path (see Task 4 Step 1 note)." })),
+  model: Type.Optional(Type.String()),
+  thinking: Type.Optional(Type.String({ description: "'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'. Free-form string; unknown values are dropped on Claude and pass through as a pi model suffix (see Task 4 Step 1 note)." })),
+  systemPrompt: Type.Optional(Type.String({ description: "Appended (or replaces, per agent frontmatter) the system prompt for this step." })),
+  skills: Type.Optional(Type.String({ description: "Comma-separated skills override for this step." })),
+  tools: Type.Optional(Type.String({ description: "Comma-separated tools override for this step." })),
+  cwd: Type.Optional(Type.String()),
+  fork: Type.Optional(Type.Boolean({ description: "Force full-context fork mode for this step, overriding any agent frontmatter session-mode." })),
+  resumeSessionId: Type.Optional(Type.String({ description: "Resume a previous Claude Code session by ID for this step." })),
+  focus: Type.Optional(Type.Boolean()),
+  // Note: `interactive` and `permissionMode` are intentionally omitted —
+  // these are the only `SubagentParams`-adjacent fields that `launchSubagent()`
+  // does not currently accept. Add them here only when plumbing all the way
+  // through `SubagentParams` / `launchSubagent`.
+});
+
+export type OrchestrationTask = Static<typeof OrchestrationTaskSchema>;
+
+export interface OrchestrationResult {
+  name: string;
+  finalMessage: string;
+  transcriptPath: string | null;
+  exitCode: number;
+  elapsedMs: number;
+  sessionId?: string;
+  error?: string;
+}
+
+/**
+ * Dependencies that orchestration cores need injected, so tests can
+ * mock all IO (pane spawning, sentinel waits, transcript reads).
+ */
+export interface LauncherDeps {
+  launch(task: OrchestrationTask, defaultFocus: boolean): Promise<LaunchedHandle>;
+  waitForCompletion(handle: LaunchedHandle): Promise<OrchestrationResult>;
+}
+
+export interface LaunchedHandle {
+  id: string;
+  name: string;
+  startTime: number;
+}
+
+export const MAX_PARALLEL_HARD_CAP = 8;
+export const DEFAULT_PARALLEL_CONCURRENCY = 4;
