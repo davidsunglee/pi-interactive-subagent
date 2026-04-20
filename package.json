@@ -1,19 +1,22 @@
 {
-  "name": "pi-interactive-subagents",
-  "version": "3.3.0",
-  "description": "Interactive subagents for pi - spawn, orchestrate, and manage sub-agent sessions in cmux/tmux/zellij terminals",
+  "name": "@davidsunglee/pi-interactive-subagent",
+  "version": "3.3.0-fork.0",
+  "description": "Interactive subagents + orchestration (serial/parallel) for pi and Claude Code — fork of HazAT/pi-interactive-subagents.",
   "keywords": [
     "pi-package"
   ],
   "license": "MIT",
-  "author": "HazAT",
+  "author": "David Lee",
+  "contributors": [
+    "HazAT (upstream: github.com/HazAT/pi-interactive-subagents)"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/HazAT/pi-interactive-subagents"
+    "url": "https://github.com/davidsunglee/pi-interactive-subagent"
   },
   "type": "module",
   "scripts": {
-    "test": "node --test test/test.ts",
+    "test": "node --test test/test.ts test/system-prompt-mode.test.ts test/orchestration/*.test.ts",
     "test:integration": "node --test test/integration/*.test.ts"
   },
   "peerDependencies": {

@@ -1,4 +1,6 @@
-# pi-interactive-subagents
+# pi-interactive-subagent
+
+> **Fork notice.** This is a fork of [`HazAT/pi-interactive-subagents`](https://github.com/HazAT/pi-interactive-subagents). We preserve the upstream execution core unchanged under `pi-extension/subagents/` (treat as vendored — periodically rebased), and layer orchestration tools (`subagent_serial`, `subagent_parallel`) under `pi-extension/orchestration/`. Small upstream patches (currently only the `thinking` fix) live as named local commits with intent to upstream.
 
 Async subagents for [pi](https://github.com/badlogic/pi-mono) — spawn, orchestrate, and manage sub-agent sessions in multiplexer panes. **Fully non-blocking** — the main agent keeps working while subagents run in the background.
 
@@ -26,7 +28,7 @@ subagent({ name: "Scout: DB", agent: "scout", task: "Map database schema" });
 ## Install
 
 ```bash
-pi install git:github.com/HazAT/pi-interactive-subagents
+pi install git:github.com/davidsunglee/pi-interactive-subagent
 ```
 
 Supported multiplexers:
@@ -60,13 +62,15 @@ export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
 
 ### Extensions
 
-**Subagents** — 4 tools + 3 commands:
+**Subagents** — 5 tools + 3 commands:
 
-| Tool              | Description                                                                     |
-| ----------------- | ------------------------------------------------------------------------------- |
-| `subagent`        | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately) |
-| `subagents_list`  | List available agent definitions                                                |
-| `subagent_resume` | Resume a previous sub-agent session (async)                                     |
+| Tool                | Description                                                                     |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `subagent`          | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately) |
+| `subagents_list`    | List available agent definitions                                                |
+| `subagent_resume`   | Resume a previous sub-agent session (async)                                     |
+| `subagent_serial`   | Run a pipeline of subagents in order (blocks; `{previous}` substitution)        |
+| `subagent_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8)   |
 
 | Command                    | Description                          |
 | -------------------------- | ------------------------------------ |
