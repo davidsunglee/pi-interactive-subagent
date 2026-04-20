@@ -2,7 +2,7 @@
 
 > **Fork notice.** This is a fork of [`HazAT/pi-interactive-subagents`](https://github.com/HazAT/pi-interactive-subagents). We preserve the upstream execution core unchanged under `pi-extension/subagents/` (treat as vendored — periodically rebased), and layer orchestration tools (`subagent_serial`, `subagent_parallel`) under `pi-extension/orchestration/`. Small upstream patches (currently only the `thinking` fix) live as named local commits with intent to upstream.
 
-Async subagents for [pi](https://github.com/badlogic/pi-mono) — spawn, orchestrate, and manage sub-agent sessions in multiplexer panes. **Fully non-blocking** — the main agent keeps working while subagents run in the background.
+Async subagents for [pi](https://github.com/badlogic/pi-mono) — spawn, orchestrate, and manage sub-agent sessions in multiplexer panes. **Mixed-mode execution** — the bare `subagent` / `subagent_resume` tools are non-blocking (they return immediately after spawning the pane); the new `subagent_serial` / `subagent_parallel` orchestration tools block the caller until all tasks in the batch complete.
 
 https://github.com/user-attachments/assets/30adb156-cfb4-4c47-84ca-dd4aa80cba9f
 
@@ -134,17 +134,94 @@ subagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer"
 
 ### Parameters
 
-| Parameter      | Type    | Default  | Description                                                             |
-| -------------- | ------- | -------- | ----------------------------------------------------------------------- |
-| `name`         | string  | required | Display name (shown in widget and pane title)                           |
-| `task`         | string  | required | Task prompt for the sub-agent                                           |
-| `agent`        | string  | —        | Load defaults from agent definition                                     |
-| `fork`         | boolean | `false`  | Force the full-context fork mode for this spawn, overriding any agent `session-mode` frontmatter |
-| `model`        | string  | —        | Override agent's default model                                          |
-| `systemPrompt` | string  | —        | Append to system prompt                                                 |
-| `skills`       | string  | —        | Comma-separated skill names                                             |
-| `tools`        | string  | —        | Comma-separated tool names                                              |
-| `cwd`          | string  | —        | Working directory for the sub-agent (see [Role Folders](#role-folders)) |
+| Parameter        | Type    | Default  | Description                                                             |
+| ---------------- | ------- | -------- | ----------------------------------------------------------------------- |
+| `name`           | string  | required | Display name (shown in widget and pane title)                           |
+| `task`           | string  | required | Task prompt for the sub-agent                                           |
+| `agent`          | string  | —        | Load defaults from agent definition                                     |
+| `fork`           | boolean | `false`  | Force the full-context fork mode for this spawn, overriding any agent `session-mode` frontmatter |
+| `model`          | string  | —        | Override agent's default model                                          |
+| `systemPrompt`   | string  | —        | Append to system prompt                                                 |
+| `skills`         | string  | —        | Comma-separated skill names                                             |
+| `tools`          | string  | —        | Comma-separated tool names                                              |
+| `cwd`            | string  | —        | Working directory for the sub-agent (see [Role Folders](#role-folders)) |
+| `cli`            | string  | —        | `'pi' \| 'claude'` — overrides agent frontmatter. Unknown values fall back silently to the pi path. |
+| `thinking`       | string  | —        | `off \| minimal \| low \| medium \| high \| xhigh` — pi folds into `<model>:<thinking>`; Claude maps via `thinkingToEffort` to `--effort`. Unknown values are dropped on Claude and pass through as a pi model suffix. |
+| `focus`          | boolean | `true`   | Whether the spawned pane grabs focus. Honored on tmux only; other backends focus the new pane regardless. |
+
+---
+
+## Orchestration tools (fork additions)
+
+### `subagent_serial`
+
+Run subagent tasks sequentially. Each task may reference the previous task's final message via the `{previous}` placeholder.
+
+```json
+{
+  "tasks": [
+    { "name": "research", "agent": "scout", "task": "Summarize the auth flow" },
+    { "name": "plan",     "agent": "planner", "task": "Given {previous}, write a migration plan" }
+  ]
+}
+```
+
+- Blocks until the sequence completes (or errors).
+- Stops on the first non-zero exit; remaining tasks are not spawned. Prior step results (including the failing step) are still returned with `isError: true`.
+- If `launch` or the completion wait throws on a step, the failure is recorded as a synthetic result at that step's position — prior results are preserved and later steps are not spawned.
+- Returns `{ results: [...], isError }` with one entry per completed step.
+- Default `focus` = `true` for each task (panes grab focus as they spawn, on tmux).
+
+### `subagent_parallel`
+
+Run subagent tasks concurrently with a cap.
+
+```json
+{
+  "tasks": [
+    { "name": "t1", "agent": "worker", "task": "Do thing A" },
+    { "name": "t2", "agent": "worker", "task": "Do thing B" },
+    { "name": "t3", "agent": "worker", "task": "Do thing C" }
+  ],
+  "maxConcurrency": 4
+}
+```
+
+- Blocks until **all** tasks in the batch complete (success or failure).
+- Default `maxConcurrency` = 4, hard cap 8 (call is rejected above the cap).
+- Partial failures don't cancel siblings; each task's result is reported independently at its input index. A thrown error from one task's `launch` or completion wait is captured as a synthetic failing result and does not stop the others.
+- Default `focus` = `false` for each task. Honored only on tmux (spawned via `split-window -d`); **other backends (cmux, zellij, wezterm) currently focus the new pane regardless** — documented backend limitation. Use the widget or native mux shortcuts to navigate.
+- Set `focus: true` on an individual task to override.
+
+### Task schema
+
+Each entry in `subagent_serial.tasks` / `subagent_parallel.tasks` accepts the full per-call `SubagentParams` surface that the bare `subagent` tool already exposes: `agent`, `task`, `name`, `cli`, `model`, `thinking`, `systemPrompt`, `skills`, `tools`, `cwd`, `fork`, `resumeSessionId`, plus the `focus` override. The only `SubagentParams`-adjacent fields not plumbed today are `interactive` and `permissionMode` (upstream `launchSubagent` doesn't accept them yet).
+
+### Claude plugin (bundled, auto-loaded — no manual install required)
+
+The sentinel-based completion handshake is driven by a small Claude Stop hook that **ships inside this repo** at `pi-extension/subagents/plugin/`. It is not something you install globally; the launch path in `pi-extension/subagents/index.ts` resolves that directory relative to the compiled extension, checks `existsSync`, and appends `--plugin-dir <repo-local plugin path>` to the `claude` invocation (see Task 6's `buildClaudeCmdParts` for the exact wiring). As long as you run pi from a checkout of this repo (or an install that preserves the `pi-extension/subagents/plugin/` subtree), the Stop hook is loaded automatically every time a `cli: "claude"` task is dispatched.
+
+There is no `claude plugin install` step for this fork. If you previously symlinked the plugin into `~/.claude/plugins/`, you can remove that symlink — the `--plugin-dir` flag is authoritative and does not depend on global Claude plugin state.
+
+What the bundled plugin actually provides is the **clean completion signal**: the Stop hook writes `PI_CLAUDE_SENTINEL` and the `<sentinel>.transcript` pointer, which `watchSubagent` consumes to populate `SubagentResult.summary`, `claudeSessionId`, and (after the v3 archive step) `SubagentResult.transcriptPath` pointing at the preserved jsonl under `~/.pi/agent/sessions/claude-code/`.
+
+If for some reason the bundled plugin directory is missing (e.g. a truncated install that drops the `plugin/` subtree), the launch path simply omits `--plugin-dir` and Claude runs without the Stop hook. In that degraded mode, **completion is still detected** — `launchSubagent` appends `; echo '__SUBAGENT_DONE_'$?'__'` to every Claude command, and `pollForExit` in `pi-extension/subagents/cmux.ts` scans the pane screen for `__SUBAGENT_DONE_(\d+)__` and returns an `exitCode` from that match. What you lose is:
+
+- the archived Claude transcript under `~/.pi/agent/sessions/claude-code/` (no `.transcript` pointer → nothing to copy),
+- `SubagentResult.transcriptPath` (falls back to `null` via the Task 7 Step 3 catch path / Claude-branch contract), and
+- `SubagentResult.claudeSessionId`,
+
+and the summary falls back to screen-scraped tail output rather than the Stop hook's structured final message. Orchestration still returns a result for that step; it just carries `transcriptPath: null` and a scraped summary.
+
+A dedicated "bundled-plugin directory not found" error, an installation-health probe, and a bounded fallback timeout are all listed under Deferred work. Separately, tool-signal → running-wait cancellation is also deferred (see Deferred work entry); today the only code path that aborts `RunningSubagent.abortController` is `session_shutdown`, so if you ever do end up needing to interrupt a stuck Claude subagent, ending the pi session is the reliable lever.
+
+### Manual smoke test (per-skill migration)
+
+1. `cd` to a scratch repo with a persistent pi session running.
+2. Dispatch `subagent_serial` with two trivial tasks (pi + pi), confirm both panes spawn, `{previous}` substitution works, final message returns.
+3. Dispatch `subagent_parallel` with 3 tasks and `maxConcurrency: 2` on tmux, confirm detached spawn (panes appear but focus stays on the caller), widget displays all three, results aggregate in input order. On non-tmux backends, confirm the new panes take focus (documented limitation).
+4. Dispatch `subagent_serial` with one `cli: "claude"` task (trivial prompt like "echo hello"), confirm the Stop hook fires and the transcript is copied to `~/.pi/agent/sessions/claude-code/`.
+5. Verify `SubagentResult.transcriptPath` (visible via the orchestration tool's `details.results[i].transcriptPath`) points at a file that still `existsSync` after sentinel cleanup — this is the v3 archived-transcript fix and the behavior the Task 17 scaffold will one day cover automatically.
 
 ---
 
@@ -240,7 +317,8 @@ You are a specialized agent that does X...
 | `name`        | string  | Agent name (used in `agent: "my-agent"`)                                                                                                                                                                                                                                    |
 | `description` | string  | Shown in `subagents_list` output                                                                                                                                                                                                                                            |
 | `model`       | string  | Default model (e.g. `anthropic/claude-sonnet-4-6`)                                                                                                                                                                                                                          |
-| `thinking`    | string  | Thinking level: `minimal`, `medium`, `high`                                                                                                                                                                                                                                 |
+| `cli`         | string  | CLI to use for this agent: `'pi'` (default) or `'claude'`. Also accepted as a per-call tool parameter override (overrides frontmatter).                                                                                                                                     |
+| `thinking`    | string  | Thinking level: `off \| minimal \| low \| medium \| high \| xhigh`. Also accepted as a per-call tool parameter override.                                                                                                                                                    |
 | `tools`       | string  | Comma-separated **native pi tools only**: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`                                                                                                                                                                             |
 | `skills`      | string  | Comma-separated skill names to auto-load                                                                                                                                                                                                                                    |
 | `session-mode` | string | Default child-session mode: `standalone`, `lineage-only`, or `fork` |
@@ -303,7 +381,7 @@ By default, every sub-agent can spawn further sub-agents. Control this with fron
 
 ### `spawning: false`
 
-Denies all spawning tools (`subagent`, `subagents_list`, `subagent_resume`):
+Denies all spawning tools (`subagent`, `subagents_list`, `subagent_resume`, `subagent_serial`, `subagent_parallel`):
 
 ```yaml
 ---
@@ -320,6 +398,15 @@ Fine-grained control over individual extension tools:
 ---
 name: focused-agent
 deny-tools: subagent
+---
+```
+
+To deny only the parallel orchestration tool while still allowing serial and bare spawning:
+
+```yaml
+---
+name: focused-agent
+deny-tools: subagent_parallel
 ---
 ```
 
