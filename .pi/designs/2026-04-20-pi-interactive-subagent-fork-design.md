@@ -37,6 +37,7 @@ Interactive TTY mode subsumes observability as a side-effect: the subagent runs 
 - Add tiered agent discovery (builtin < user < project).
 - Migrate `pi-config/agent/skills/` to the new tool surface.
 - Rename agent frontmatter: `maxSubagentDepth` → HazAT's `spawning` convention.
+- Small patch to upstream `subagent()` so `thinking` works as a per-call parameter and applies on the Claude path (see "Upstream patches").
 - Structural hygiene: orchestration cores implemented as pure async functions to keep a future async-dispatch mode cheap.
 
 ### Out of scope (v1)
@@ -210,6 +211,56 @@ Affected agents in `pi-config/agent/agents/`:
 
 **Caveat:** the boolean model fails closed (an agent without `spawning: true` cannot spawn), which is safer than a numeric counter, but requires discipline — every new dispatcher-callable agent must explicitly set `spawning: false` to prevent runaway. The numeric counter was a runtime safety net; this trades the safety net for explicit declaration.
 
+## Upstream patches
+
+The fork carries one small, self-contained patch to HazAT's `pi-extension/subagents/index.ts`: making `thinking` work end-to-end. Without this patch, per-task thinking overrides (as used by `execute-plan` wave dispatch today) can't be expressed, and `thinking: <level>` on Claude-cli agents is silently ignored.
+
+### Gap 1: `thinking` isn't a tool-call parameter
+
+HazAT reads `thinking` from agent frontmatter only (`index.ts:601`):
+
+```ts
+const effectiveModel = params.model ?? agentDefs?.model;
+const effectiveTools = params.tools ?? agentDefs?.tools;
+const effectiveSkills = params.skills ?? agentDefs?.skills;
+const effectiveThinking = agentDefs?.thinking;   // frontmatter only
+```
+
+Per-call overrides need `params.thinking ?? agentDefs?.thinking`, and the tool's parameter schema needs `thinking?: string`.
+
+### Gap 2: HazAT's Claude path ignores `thinking` entirely
+
+The pi path folds thinking into the model string (`index.ts:742`): `${effectiveModel}:${effectiveThinking}`. The Claude path (`index.ts:646-648`) only passes `--model`; there's no `--effort`. So even `thinking: high` in a Claude-cli agent's frontmatter does nothing today.
+
+### Patch
+
+Applied as a small local commit on top of the vendored upstream (~15 LOC), clearly marked and portable to an upstream PR:
+
+1. Add `thinking?: string` to the `subagent` tool parameter schema.
+2. Change `effectiveThinking` to fall back through tool-call params: `params.thinking ?? agentDefs?.thinking`.
+3. Lift the thinking→effort mapping from our current `pi-subagent/claude-args.ts`:
+
+   ```
+   off | minimal | low → low
+   medium              → medium
+   high                → high
+   xhigh               → max
+   ```
+
+4. In the Claude branch around `index.ts:647`, add:
+
+   ```ts
+   if (effectiveThinking) {
+     cmdParts.push("--effort", thinkingToEffort(effectiveThinking));
+   }
+   ```
+
+Pi path needs no further change — the existing `model:thinking` concatenation works once step 2 lands.
+
+### Posture
+
+This patch is small, orthogonal, and broadly useful. Intent is to upstream it as a PR to HazAT shortly after the fork stabilizes. Until then it lives as a named local commit so rebases over upstream stay clean.
+
 ## Skill migration plan
 
 Migration happens in `pi-config/agent/skills/` per-skill, not bulk. Each migration is a self-contained PR in `pi-config`.
@@ -311,3 +362,4 @@ None — all decisions resolved during brainstorming.
 | Model fallback | Drop | Keep as-is; move into orchestration layer |
 | Depth guard | Drop, adopt `spawning: false` | Keep numeric counter alongside `spawning` |
 | Async wrapper mode | Deferred; v1 structured to make it cheap later | Ship in v1; don't plan for it at all |
+| `thinking` support | Patch upstream `subagent()` tool + add `--effort` mapping to Claude path (~15 LOC, intended for upstream PR) | Handle only in our orchestration layer (impossible for Claude path — HazAT's Claude launch doesn't pass any effort flag); drop per-call `thinking` entirely |
