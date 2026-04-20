@@ -31,6 +31,8 @@ import {
   getNewEntries,
   seedSubagentSessionFile,
 } from "./session.ts";
+import { registerOrchestrationTools } from "../orchestration/tool-handlers.ts";
+import { makeDefaultDeps } from "../orchestration/default-deps.ts";
 
 // Survive /reload: clear timers and abort poll loops from the previous module load.
 // /reload re-imports this file, giving fresh module-level state, but closures from
@@ -141,7 +143,13 @@ interface ListedAgentDefinition extends AgentDefinition {
 }
 
 /** Tools that are gated by `spawning: false` */
-const SPAWNING_TOOLS = new Set(["subagent", "subagents_list", "subagent_resume"]);
+const SPAWNING_TOOLS = new Set([
+  "subagent",
+  "subagents_list",
+  "subagent_resume",
+  "subagent_serial",
+  "subagent_parallel",
+]);
 
 /**
  * Resolve the effective set of denied tool names from agent defaults.
@@ -1773,5 +1781,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       );
     },
   });
+
+  // ── Orchestration tools (our additions) ──
+  // Pass shouldRegister through so per-tool deny entries in settings.json
+  // (e.g. disabling subagent_parallel alone) gate each tool independently.
+  // Pass preflightSubagent so orchestration execute handlers surface the
+  // same mux/session-file errors as the bare subagent tool.
+  // Pass selfSpawnBlocked so orchestration handlers enforce the same
+  // PI_SUBAGENT_AGENT recursion guard as the bare subagent tool
+  // (v5 review finding #1 — no silent bypass of the existing runtime
+  // invariant).
+  registerOrchestrationTools(
+    pi,
+    (ctx) => makeDefaultDeps(ctx),
+    shouldRegister,
+    preflightSubagent,
+    selfSpawnBlocked,
+  );
 }
 // test
