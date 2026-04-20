@@ -90,6 +90,24 @@ const SubagentParams = Type.Object({
         "Resume a previous Claude Code session by its ID. Loads the conversation history and continues where it left off. The session ID is returned in details of every claude tool call. Use this to retry cancelled runs or ask follow-up questions.",
     }),
   ),
+  cli: Type.Optional(
+    Type.String({
+      description:
+        "CLI to launch for this subagent. One of 'pi' (default) or 'claude'. Overrides the agent frontmatter `cli` field.",
+    }),
+  ),
+  thinking: Type.Optional(
+    Type.String({
+      description:
+        "Thinking/effort override. Values: off, minimal, low, medium, high, xhigh. For pi: folded into the model string as `<model>:<thinking>`. For Claude: mapped to --effort (off/minimal/low→low, medium, high, xhigh→max). Overrides agent frontmatter.",
+    }),
+  ),
+  focus: Type.Optional(
+    Type.Boolean({
+      description:
+        "Whether the newly spawned pane grabs focus. Default true. Only honored on tmux today (other backends ignore). Orchestration wrappers default this to false for parallel, true for serial.",
+    }),
+  ),
 });
 
 type SubagentSessionMode = "standalone" | "lineage-only" | "fork";
@@ -608,7 +626,7 @@ async function launchSubagent(
   const effectiveModel = params.model ?? agentDefs?.model;
   const effectiveTools = params.tools ?? agentDefs?.tools;
   const effectiveSkills = params.skills ?? agentDefs?.skills;
-  const effectiveThinking = agentDefs?.thinking;
+  const effectiveThinking = params.thinking ?? agentDefs?.thinking;
 
   const sessionFile = ctx.sessionManager.getSessionFile();
   if (!sessionFile) throw new Error("No session file");
@@ -634,13 +652,15 @@ async function launchSubagent(
   // Use pre-created surface (parallel mode) or create a new one.
   // For new surfaces, pause briefly so the shell is ready before sending the command.
   const surfacePreCreated = !!options?.surface;
-  const surface = options?.surface ?? createSurface(params.name);
+  const surface =
+    options?.surface ?? createSurface(params.name, { detach: params.focus === false });
   if (!surfacePreCreated) {
     await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
   }
 
   // ── Claude Code CLI path ──
-  if (agentDefs?.cli === "claude") {
+  const effectiveCli = params.cli ?? agentDefs?.cli;
+  if (effectiveCli === "claude") {
     const sentinelFile = `/tmp/pi-claude-${id}-done`;
     const pluginDir = join(dirname(new URL(import.meta.url).pathname), "plugin");
 
@@ -690,6 +710,7 @@ async function launchSubagent(
       ].join("\n"),
     });
 
+    // cli recorded for watchSubagent completion-path dispatch
     const running: RunningSubagent = {
       id,
       name: params.name,
@@ -869,6 +890,7 @@ async function launchSubagent(
     startTime,
     sessionFile: subagentSessionFile,
     launchScriptFile,
+    cli: "pi",
   };
 
   runningSubagents.set(id, running);

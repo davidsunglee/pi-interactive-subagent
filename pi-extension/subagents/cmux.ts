@@ -197,7 +197,7 @@ let cmuxSubagentPane: string | null = null;
  *
  * Returns an identifier (`surface:42` in cmux, `%12` in tmux, `pane:7` in zellij, `42` in wezterm).
  */
-export function createSurface(name: string): string {
+export function createSurface(name: string, opts?: { detach?: boolean }): string {
   const backend = getMuxBackend();
 
   if (backend === "cmux" && cmuxSubagentPane) {
@@ -215,7 +215,7 @@ export function createSurface(name: string): string {
   // On tmux, target the parent pi's pane so splits follow the agent, not the user's focus.
   // See https://github.com/HazAT/pi-interactive-subagents/issues/12
   const fromSurface = backend === "tmux" ? process.env.TMUX_PANE : undefined;
-  const surface = createSurfaceSplit(name, "right", fromSurface);
+  const surface = createSurfaceSplit(name, "right", fromSurface, opts);
 
   // For cmux, remember the pane so future subagents become tabs in it
   if (backend === "cmux") {
@@ -260,6 +260,7 @@ export function createSurfaceSplit(
   name: string,
   direction: "left" | "right" | "up" | "down",
   fromSurface?: string,
+  opts?: { detach?: boolean },
 ): string {
   const backend = requireMuxBackend();
 
@@ -281,6 +282,7 @@ export function createSurfaceSplit(
 
   if (backend === "tmux") {
     const args = ["split-window"];
+    if (opts?.detach) args.push("-d");
     if (direction === "left" || direction === "right") {
       args.push("-h");
     } else {
