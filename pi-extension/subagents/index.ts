@@ -608,6 +608,41 @@ function startWidgetRefresh() {
   (globalThis as any)[WIDGET_INTERVAL_KEY] = widgetInterval;
 }
 
+interface ClaudeCmdInputs {
+  sentinelFile: string;
+  pluginDir: string | undefined; // if existsSync, pass --plugin-dir
+  model: string | undefined;
+  appendSystemPrompt: string | undefined;
+  resumeSessionId: string | undefined;
+  effectiveThinking: string | undefined;
+  task: string;
+}
+
+export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
+  const parts: string[] = [];
+  parts.push(`PI_CLAUDE_SENTINEL=${shellEscape(input.sentinelFile)}`);
+  parts.push("claude");
+  parts.push("--dangerously-skip-permissions");
+  if (input.pluginDir) {
+    parts.push("--plugin-dir", shellEscape(input.pluginDir));
+  }
+  if (input.model) {
+    parts.push("--model", shellEscape(input.model));
+  }
+  const effort = thinkingToEffort(input.effectiveThinking);
+  if (effort) {
+    parts.push("--effort", effort);
+  }
+  if (input.appendSystemPrompt) {
+    parts.push("--append-system-prompt", shellEscape(input.appendSystemPrompt));
+  }
+  if (input.resumeSessionId) {
+    parts.push("--resume", shellEscape(input.resumeSessionId));
+  }
+  parts.push(shellEscape(input.task));
+  return parts;
+}
+
 /**
  * Launch a subagent: creates the multiplexer pane, builds the command, and
  * sends it. Returns a RunningSubagent — does NOT poll.
@@ -664,31 +699,16 @@ async function launchSubagent(
     const sentinelFile = `/tmp/pi-claude-${id}-done`;
     const pluginDir = join(dirname(new URL(import.meta.url).pathname), "plugin");
 
-    const cmdParts: string[] = [];
-    cmdParts.push(`PI_CLAUDE_SENTINEL=${shellEscape(sentinelFile)}`);
-    cmdParts.push("claude");
-    cmdParts.push("--dangerously-skip-permissions");
-
-    if (existsSync(pluginDir)) {
-      cmdParts.push("--plugin-dir", shellEscape(pluginDir));
-    }
-
-    if (effectiveModel) {
-      cmdParts.push("--model", shellEscape(effectiveModel));
-    }
-
-    const sp = params.systemPrompt ?? agentDefs?.body;
-    if (sp) {
-      cmdParts.push("--append-system-prompt", shellEscape(sp));
-    }
-
-    if (params.resumeSessionId) {
-      cmdParts.push("--resume", shellEscape(params.resumeSessionId));
-    }
-
-    // Always pass the task as the prompt — even for resumed sessions,
-    // the caller's task is the follow-up instruction.
-    cmdParts.push(shellEscape(params.task));
+    const pluginDirResolved = existsSync(pluginDir) ? pluginDir : undefined;
+    const cmdParts = buildClaudeCmdParts({
+      sentinelFile,
+      pluginDir: pluginDirResolved,
+      model: effectiveModel,
+      appendSystemPrompt: params.systemPrompt ?? agentDefs?.body,
+      resumeSessionId: params.resumeSessionId,
+      effectiveThinking,
+      task: params.task,
+    });
 
     const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : "";
     const command = `${cdPrefix}${cmdParts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
