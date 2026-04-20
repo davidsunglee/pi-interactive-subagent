@@ -195,6 +195,42 @@ function parseSessionMode(value: string | undefined): SubagentSessionMode | unde
   return undefined;
 }
 
+export function preflightSubagent(ctx: {
+  sessionManager: { getSessionFile(): string | null };
+}): { content: Array<{ type: "text"; text: string }>; details: { error: string } } | null {
+  if (!isMuxAvailable()) {
+    return muxUnavailableResult();
+  }
+  if (!ctx.sessionManager.getSessionFile()) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Error: no session file. Start pi with a persistent session to use subagents.",
+        },
+      ],
+      details: { error: "no session file" },
+    };
+  }
+  return null;
+}
+
+export function selfSpawnBlocked(
+  agent: string | undefined,
+): { content: Array<{ type: "text"; text: string }>; details: { error: string } } | null {
+  const currentAgent = process.env.PI_SUBAGENT_AGENT;
+  if (!agent || !currentAgent || agent !== currentAgent) return null;
+  return {
+    content: [
+      {
+        type: "text",
+        text: `You are the ${currentAgent} agent — do not start another ${currentAgent}. You were spawned to do this work yourself. Complete the task directly.`,
+      },
+    ],
+    details: { error: "self-spawn blocked" },
+  };
+}
+
 export function thinkingToEffort(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const v = value.toLowerCase().trim();
@@ -395,12 +431,13 @@ function formatBytes(bytes: number): string {
 /**
  * Result from running a single subagent.
  */
-interface SubagentResult {
+export interface SubagentResult {
   name: string;
   task: string;
   summary: string;
   sessionFile?: string;
   claudeSessionId?: string;  // For Claude Code resume capability
+  transcriptPath: string | null;
   exitCode: number;
   elapsed: number;
   error?: string;
@@ -410,7 +447,7 @@ interface SubagentResult {
 /**
  * State for a launched (but not yet completed) subagent.
  */
-interface RunningSubagent {
+export interface RunningSubagent {
   id: string;
   name: string;
   task: string;
@@ -649,7 +686,7 @@ export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
  *
  * Call watchSubagent() on the returned object to observe completion.
  */
-async function launchSubagent(
+export async function launchSubagent(
   params: typeof SubagentParams.static,
   ctx: { sessionManager: { getSessionFile(): string | null; getSessionId(): string; getSessionDir(): string }; cwd: string },
   options?: { surface?: string },
@@ -745,6 +782,7 @@ async function launchSubagent(
     };
 
     runningSubagents.set(id, running);
+    startWidgetRefresh();   // idempotent via widgetInterval guard
     return running;
   }
 
@@ -914,6 +952,7 @@ async function launchSubagent(
   };
 
   runningSubagents.set(id, running);
+  startWidgetRefresh();   // idempotent via widgetInterval guard
   return running;
 }
 
@@ -943,7 +982,7 @@ function copyClaudeSession(sentinelFile: string): string | null {
   }
 }
 
-async function watchSubagent(
+export async function watchSubagent(
   running: RunningSubagent,
   signal: AbortSignal,
 ): Promise<SubagentResult> {
@@ -992,10 +1031,13 @@ async function watchSubagent(
           : "Claude Code exited without output";
       }
 
-      // Copy Claude session transcript
+      // Archive Claude session transcript; compute archived path BEFORE unlinking
+      // the sentinel + pointer files (cleanup erases the source path we need).
       let sessionId: string | null = null;
+      let transcriptPath: string | null = null;
       if (running.sentinelFile) {
         sessionId = copyClaudeSession(running.sentinelFile);
+        transcriptPath = sessionId ? join(CLAUDE_SESSIONS_DIR, sessionId) : null;
         try { unlinkSync(running.sentinelFile); } catch {}
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
@@ -1003,7 +1045,15 @@ async function watchSubagent(
       closeSurface(surface);
       runningSubagents.delete(running.id);
 
-      return { name, task, summary, exitCode: result.exitCode, elapsed, ...(sessionId ? { claudeSessionId: sessionId } : {}) };
+      return {
+        name,
+        task,
+        summary,
+        exitCode: result.exitCode,
+        elapsed,
+        transcriptPath,
+        ...(sessionId ? { claudeSessionId: sessionId } : {}),
+      };
     }
 
     // Pi subagent result extraction (existing, unchanged)
@@ -1025,7 +1075,16 @@ async function watchSubagent(
     closeSurface(surface);
     runningSubagents.delete(running.id);
 
-    return { name, task, summary, sessionFile, exitCode: result.exitCode, elapsed, ping: result.ping };
+    return {
+      name,
+      task,
+      summary,
+      exitCode: result.exitCode,
+      elapsed,
+      sessionFile,
+      transcriptPath: existsSync(sessionFile) ? sessionFile : null,
+      ping: result.ping,
+    };
   } catch (err: any) {
     try {
       closeSurface(surface);
@@ -1039,6 +1098,7 @@ async function watchSubagent(
         summary: "Subagent cancelled.",
         exitCode: 1,
         elapsed: Math.floor((Date.now() - startTime) / 1000),
+        transcriptPath: null,
         error: "cancelled",
       };
     }
@@ -1048,6 +1108,7 @@ async function watchSubagent(
       summary: `Subagent error: ${err?.message ?? String(err)}`,
       exitCode: 1,
       elapsed: Math.floor((Date.now() - startTime) / 1000),
+      transcriptPath: null,
       error: err?.message ?? String(err),
     };
   }
@@ -1104,36 +1165,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        // Prevent self-spawning (e.g. planner spawning another planner)
-        const currentAgent = process.env.PI_SUBAGENT_AGENT;
-        if (params.agent && currentAgent && params.agent === currentAgent) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `You are the ${currentAgent} agent — do not start another ${currentAgent}. You were spawned to do this work yourself. Complete the task directly.`,
-              },
-            ],
-            details: { error: "self-spawn blocked" },
-          };
-        }
+        const blocked = selfSpawnBlocked(params.agent);
+        if (blocked) return blocked;
 
-        // Validate prerequisites
-        if (!isMuxAvailable()) {
-          return muxUnavailableResult();
-        }
-
-        if (!ctx.sessionManager.getSessionFile()) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Error: no session file. Start pi with a persistent session to use subagents.",
-              },
-            ],
-            details: { error: "no session file" },
-          };
-        }
+        const preflight = preflightSubagent(ctx);
+        if (preflight) return preflight;
 
         // Launch the subagent (creates pane, sends command)
         const running = await launchSubagent(params, ctx);
