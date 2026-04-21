@@ -110,6 +110,12 @@ const SubagentParams = Type.Object({
         "Whether the newly spawned pane grabs focus. Default true. Only honored on tmux today (other backends ignore). Orchestration wrappers default this to false for parallel, true for serial.",
     }),
   ),
+  interactive: Type.Optional(
+    Type.Boolean({
+      description:
+        "Vestigial compat field. Accepted for legacy callers but has no runtime effect in v1 — neither the pane nor the headless backend honors it. Do not rely on this field.",
+    }),
+  ),
 });
 
 type SubagentSessionMode = "standalone" | "lineage-only" | "fork";
