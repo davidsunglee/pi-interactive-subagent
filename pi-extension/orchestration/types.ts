@@ -1,5 +1,9 @@
 import type { Static, TObject } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
+import type {
+  TranscriptMessage,
+  UsageStats,
+} from "../subagents/backends/types.ts";
 
 export const OrchestrationTaskSchema = Type.Object({
   name: Type.Optional(Type.String({ description: "Widget label; auto-generated if omitted." })),
@@ -40,6 +44,8 @@ export interface OrchestrationResult {
   elapsedMs: number;
   sessionId?: string;
   error?: string;
+  usage?: UsageStats;
+  transcript?: TranscriptMessage[];
 }
 
 /**
