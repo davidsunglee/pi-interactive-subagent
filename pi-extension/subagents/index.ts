@@ -1320,7 +1320,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
 
         // Fallback (shouldn't happen)
-        const text = typeof result.content?.[0]?.text === "string" ? result.content[0].text : "";
+        const first = result.content?.[0];
+        const text = first && first.type === "text" ? first.text : "";
         return new Text(theme.fg("dim", text), 0, 0);
       },
     });
@@ -1431,7 +1432,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
 
         // Fallback
-        const text = typeof result.content?.[0]?.text === "string" ? result.content[0].text : "";
+        const first = result.content?.[0];
+        const text = first && first.type === "text" ? first.text : "";
         return new Text(theme.fg("dim", text), 0, 0);
       },
 
@@ -1656,6 +1658,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     if (!details) return undefined;
 
     return {
+      invalidate() {},
       render(width: number): string[] {
         const name = details.name ?? "subagent";
         const exitCode = details.exitCode ?? 0;
@@ -1721,6 +1724,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     if (!details) return undefined;
 
     return {
+      invalidate() {},
       render(width: number): string[] {
         const name = details.name ?? "subagent";
         const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
