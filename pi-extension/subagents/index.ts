@@ -33,6 +33,10 @@ import {
 } from "./session.ts";
 import { registerOrchestrationTools } from "../orchestration/tool-handlers.ts";
 import { makeDefaultDeps } from "../orchestration/default-deps.ts";
+import { preflightOrchestration } from "./preflight-orchestration.ts";
+import { randomUUID } from "node:crypto";
+import { selectBackend } from "./backends/select.ts";
+import { makeHeadlessBackend } from "./backends/headless.ts";
 
 // Survive /reload: clear timers and abort poll loops from the previous module load.
 // /reload re-imports this file, giving fresh module-level state, but closures from
@@ -466,9 +470,12 @@ export interface RunningSubagent {
   name: string;
   task: string;
   agent?: string;
-  surface: string;
+  backend: "pane" | "headless";
   startTime: number;
-  sessionFile: string;
+  /** Pane-only: present only for `backend === "pane"`. */
+  surface?: string;
+  /** Pane-only: path to the subagent's jsonl session file. Headless does not have one at launch time. */
+  sessionFile?: string;
   launchScriptFile?: string;
   entries?: number;
   bytes?: number;
@@ -787,6 +794,7 @@ export async function launchSubagent(
       name: params.name,
       task: params.task,
       agent: params.agent,
+      backend: "pane",
       surface,
       startTime,
       sessionFile: subagentSessionFile,
@@ -958,6 +966,7 @@ export async function launchSubagent(
     name: params.name,
     task: params.task,
     agent: params.agent,
+    backend: "pane",
     surface,
     startTime,
     sessionFile: subagentSessionFile,
@@ -1182,8 +1191,100 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const blocked = selfSpawnBlocked(params.agent);
         if (blocked) return blocked;
 
-        const preflight = preflightSubagent(ctx);
+        const preflight = preflightOrchestration(ctx);
         if (preflight) return preflight;
+
+        if (selectBackend() === "headless") {
+          const backend = makeHeadlessBackend(ctx);
+          const handle = await backend.launch(params, params.focus ?? true);
+
+          const id = randomUUID();
+          const watcherAbort = new AbortController();
+          const running: RunningSubagent = {
+            id,
+            name: handle.name,
+            task: params.task,
+            agent: params.agent,
+            backend: "headless",
+            startTime: Date.now(),
+            abortController: watcherAbort,
+            cli: params.cli,
+          };
+          runningSubagents.set(id, running);
+
+          backend
+            .watch(handle, watcherAbort.signal)
+            .then((result) => {
+              const sessionRef = result.sessionId
+                ? `\n\nSession id: ${result.sessionId}`
+                : "";
+              const content =
+                result.exitCode !== 0
+                  ? `Sub-agent "${handle.name}" failed (exit code ${result.exitCode}).\n\n${result.finalMessage}${sessionRef}`
+                  : `Sub-agent "${handle.name}" completed (${formatElapsed(result.elapsedMs / 1000)}).\n\n${result.finalMessage}${sessionRef}`;
+              pi.sendMessage(
+                {
+                  customType: "subagent_result",
+                  content,
+                  display: true,
+                  details: {
+                    name: handle.name,
+                    task: params.task,
+                    agent: params.agent,
+                    exitCode: result.exitCode,
+                    elapsed: result.elapsedMs / 1000,
+                    ...(result.sessionId ? { claudeSessionId: result.sessionId } : {}),
+                  },
+                },
+                { triggerTurn: true, deliverAs: "steer" },
+              );
+            })
+            .catch((err) => {
+              const aborted = watcherAbort.signal.aborted;
+              const msg = err?.message ?? String(err);
+              pi.sendMessage(
+                {
+                  customType: "subagent_result",
+                  content: aborted
+                    ? `Sub-agent "${handle.name}" aborted (session shutdown).`
+                    : `Sub-agent "${handle.name}" error: ${msg}`,
+                  display: true,
+                  details: {
+                    name: handle.name,
+                    task: params.task,
+                    agent: params.agent,
+                    error: aborted ? "aborted" : msg,
+                    exitCode: aborted ? 130 : 1,
+                  },
+                },
+                { triggerTurn: true, deliverAs: "steer" },
+              );
+            })
+            .finally(() => {
+              runningSubagents.delete(id);
+            });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Sub-agent "${params.name}" launched in the background (headless). ` +
+                  `Do NOT generate or assume any results — you have no idea what the sub-agent will do or produce. ` +
+                  `The results will be delivered to you automatically as a steer message when the sub-agent finishes. ` +
+                  `Until then, move on to other work or tell the user you're waiting.`,
+              },
+            ],
+            details: {
+              id,
+              name: params.name,
+              task: params.task,
+              agent: params.agent,
+              backend: "headless",
+              status: "started",
+            },
+          };
+        }
 
         // Launch the subagent (creates pane, sends command)
         const running = await launchSubagent(params, ctx);
@@ -1532,6 +1633,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           id,
           name,
           task: params.message ?? "resumed session",
+          backend: "pane",
           surface,
           startTime,
           sessionFile: params.sessionPath,
@@ -1805,7 +1907,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     pi,
     (ctx) => makeDefaultDeps(ctx),
     shouldRegister,
-    preflightSubagent,
+    preflightOrchestration,
     selfSpawnBlocked,
   );
 }
