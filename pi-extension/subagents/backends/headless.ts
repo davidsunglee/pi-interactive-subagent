@@ -127,11 +127,13 @@ interface RunParams {
 function makeAbortHandler(proc: ChildProcess, isExited: () => boolean): () => void {
   return () => {
     try { proc.kill("SIGTERM"); } catch {}
+    // unref so the 5s escalation timer does not hold the event loop open
+    // after the child has already exited normally (review-I1).
     setTimeout(() => {
       if (!isExited()) {
         try { proc.kill("SIGKILL"); } catch {}
       }
-    }, 5000);
+    }, 5000).unref();
   };
 }
 
