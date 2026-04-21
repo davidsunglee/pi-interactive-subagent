@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn as realSpawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { LineBuffer } from "./line-buffer.ts";
@@ -27,6 +27,16 @@ interface HeadlessLaunch {
   promise: Promise<BackendResult>;
   abort: AbortController;
 }
+
+// Module-private spawn reference that the unit test harness can swap out.
+// Using a let-binding allows node:test to inject a fake spawn without
+// rewriting `node:child_process` (which is frozen on ESM import).
+let spawnImpl: typeof realSpawn = realSpawn;
+
+export const __test__ = {
+  setSpawn(fn: typeof realSpawn): void { spawnImpl = fn; },
+  restoreSpawn(): void { spawnImpl = realSpawn; },
+};
 
 function emptyUsage(): UsageStats {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -236,7 +246,7 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
   return new Promise<BackendResult>((resolve) => {
     let proc: ChildProcess;
     try {
-      proc = spawn("pi", args, {
+      proc = spawnImpl("pi", args, {
         cwd: spec.effectiveCwd ?? ctx.cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
