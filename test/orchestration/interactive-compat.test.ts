@@ -19,8 +19,7 @@ describe("interactive field is accepted and ignored (schema-level compat)", () =
     assert.equal(Value.Check(OrchestrationTaskSchema, task), false);
   });
 
-  it("resolveLaunchSpec() ignores `interactive` (no field on the resolved spec)", { skip: "Task 9b will add launch-spec.ts; unskip then." }, async () => {
-    // @ts-expect-error forward reference: launch-spec.ts lands in Task 9b
+  it("resolveLaunchSpec() ignores `interactive` (no field on the resolved spec)", async () => {
     const { resolveLaunchSpec } = await import("../../pi-extension/subagents/launch-spec.ts");
     const ctx = {
       sessionManager: {
