@@ -83,6 +83,10 @@ export function isMuxAvailable(): boolean {
   return getMuxBackend() !== null;
 }
 
+export function detectMux(): boolean {
+  return isMuxAvailable();
+}
+
 export function muxSetupHint(): string {
   const pref = muxPreference();
   if (pref === "cmux") {
