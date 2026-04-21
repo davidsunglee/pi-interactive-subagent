@@ -183,6 +183,70 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.error, "self-spawn blocked");
   });
 
+  it("subagent_serial threads the tool AbortSignal into runSerial so a pre-aborted call records no launch", async () => {
+    let launched = 0;
+    const spyDeps: LauncherDeps = {
+      async launch(task) {
+        launched++;
+        return { id: "x", name: task.name ?? "step", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return { name: handle.name, finalMessage: "ok", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => spyDeps, () => true);
+    const serial = tools.find((t) => t.name === "subagent_serial");
+    const ac = new AbortController();
+    ac.abort();
+    const out = await serial.execute(
+      "call-serial-abort",
+      { tasks: [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }] },
+      ac.signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+    assert.equal(launched, 0);
+    assert.equal(out.details.isError, true);
+    assert.equal(out.details.results.length, 1);
+    assert.equal(out.details.results[0].error, "cancelled");
+  });
+
+  it("subagent_parallel threads the tool AbortSignal into runParallel so a pre-aborted call records no launch", async () => {
+    let launched = 0;
+    const spyDeps: LauncherDeps = {
+      async launch(task) {
+        launched++;
+        return { id: "x", name: task.name ?? "step", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return { name: handle.name, finalMessage: "ok", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => spyDeps, () => true);
+    const parallel = tools.find((t) => t.name === "subagent_parallel");
+    const ac = new AbortController();
+    ac.abort();
+    const out = await parallel.execute(
+      "call-parallel-abort",
+      {
+        tasks: [
+          { name: "t1", agent: "x", task: "t" },
+          { name: "t2", agent: "x", task: "t" },
+        ],
+      },
+      ac.signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+    assert.equal(launched, 0);
+    assert.equal(out.details.isError, true);
+    assert.equal(out.details.results.length, 2);
+    assert.equal(out.details.results[0].error, "cancelled");
+    assert.equal(out.details.results[1].error, "cancelled");
+  });
+
   it("subagent_parallel short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
     let launched = 0;
     const countingDeps: LauncherDeps = {

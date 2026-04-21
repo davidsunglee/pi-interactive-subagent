@@ -161,6 +161,101 @@ describe("runSerial", () => {
     assert.equal(out.isError, true);
   });
 
+  it("signal already aborted before run: no task is launched and the run returns isError:true", async () => {
+    // v2 review follow-up: the orchestration tool's AbortSignal must
+    // short-circuit the whole run before any launch when it arrives
+    // pre-aborted (e.g. tool call cancelled between registration and
+    // execute).
+    let launched = 0;
+    const deps: LauncherDeps = {
+      async launch() {
+        launched++;
+        return { id: "x", name: "step", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return { name: handle.name, finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+    const ac = new AbortController();
+    ac.abort();
+    const out = await runSerial(
+      [
+        { agent: "x", task: "t1" },
+        { agent: "x", task: "t2" },
+      ],
+      { signal: ac.signal },
+      deps,
+    );
+    assert.equal(launched, 0);
+    assert.equal(out.isError, true);
+    assert.equal(out.results.length, 1);
+    assert.equal(out.results[0].error, "cancelled");
+    assert.equal(out.results[0].exitCode, 1);
+  });
+
+  it("signal aborted mid-run: the in-flight step's wait sees the signal, remaining steps are not launched", async () => {
+    // The abort happens after step 1 is launched but before completion.
+    // Deps must receive the signal so its wait honors cancellation;
+    // the wrapper records the cancelled step and stops.
+    let launchedCount = 0;
+    const launchCalls: string[] = [];
+    const deps: LauncherDeps = {
+      async launch(task, _defaultFocus, _signal) {
+        launchCalls.push(task.task);
+        launchedCount++;
+        return { id: task.task, name: task.name ?? "step", startTime: Date.now() };
+      },
+      async waitForCompletion(handle, signal) {
+        return new Promise((resolve) => {
+          if (signal?.aborted) {
+            resolve({
+              name: handle.name,
+              finalMessage: "",
+              transcriptPath: null,
+              exitCode: 1,
+              elapsedMs: 1,
+              error: "cancelled",
+            });
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              resolve({
+                name: handle.name,
+                finalMessage: "",
+                transcriptPath: null,
+                exitCode: 1,
+                elapsedMs: 1,
+                error: "cancelled",
+              });
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const ac = new AbortController();
+    const runPromise = runSerial(
+      [
+        { agent: "x", task: "t1" },
+        { agent: "x", task: "t2" },
+        { agent: "x", task: "t3" },
+      ],
+      { signal: ac.signal },
+      deps,
+    );
+    await new Promise((r) => setImmediate(r));
+    ac.abort();
+    const out = await runPromise;
+    assert.equal(launchedCount, 1, "only t1 should have been launched before abort");
+    assert.deepEqual(launchCalls, ["t1"]);
+    assert.equal(out.results.length, 1);
+    assert.equal(out.results[0].exitCode, 1);
+    assert.equal(out.results[0].error, "cancelled");
+    assert.equal(out.isError, true);
+  });
+
   it("when deps.waitForCompletion throws, the throwing step is recorded as a failure and the run stops", async () => {
     // v4 fix: watchSubagent can throw (abort, IO failure) after launch
     // succeeds. The failing step must still appear in results.

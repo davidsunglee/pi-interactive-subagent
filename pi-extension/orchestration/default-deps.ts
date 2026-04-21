@@ -27,13 +27,18 @@ import type {
  * redundant. The transcriptPath on SubagentResult is the single source
  * of truth.
  *
+ * Cancellation:
+ *   When an orchestration tool's AbortSignal fires, `waitForCompletion`
+ *   forwards it into the local `running.abortController` so
+ *   `watchSubagent`'s `pollForExit` unblocks. `watchSubagent`'s catch
+ *   branch then closes the pane and returns the synthetic "cancelled"
+ *   SubagentResult (exitCode: 1, error: "cancelled"), which the run-
+ *   serial/parallel cores turn into an aborted OrchestrationResult.
+ *
  * Deferred (intentionally NOT plumbed here):
  *   - `caller_ping` surfacing — treated as a regular error for now;
  *     a future revision can add an explicit `ping` field on
  *     OrchestrationResult if the wrappers need to differentiate.
- *   - Propagating the tool-execution AbortSignal into the running
- *     subagent's wait — orchestration wrappers construct a local
- *     AbortController today; tying it to the tool signal is future work.
  */
 export function makeDefaultDeps(ctx: {
   sessionManager: ExtensionContext["sessionManager"];
@@ -42,7 +47,11 @@ export function makeDefaultDeps(ctx: {
   const handleToRunning = new Map<string, RunningSubagent>();
 
   return {
-    async launch(task: OrchestrationTask, defaultFocus: boolean): Promise<LaunchedHandle> {
+    async launch(
+      task: OrchestrationTask,
+      defaultFocus: boolean,
+      _signal?: AbortSignal,
+    ): Promise<LaunchedHandle> {
       const resolvedFocus = task.focus ?? defaultFocus;
       const running = await launchSubagent(
         {
@@ -65,7 +74,10 @@ export function makeDefaultDeps(ctx: {
       handleToRunning.set(running.id, running);
       return { id: running.id, name: running.name, startTime: running.startTime };
     },
-    async waitForCompletion(handle: LaunchedHandle): Promise<OrchestrationResult> {
+    async waitForCompletion(
+      handle: LaunchedHandle,
+      signal?: AbortSignal,
+    ): Promise<OrchestrationResult> {
       const running = handleToRunning.get(handle.id);
       if (!running) {
         return {
@@ -79,17 +91,33 @@ export function makeDefaultDeps(ctx: {
       }
       const abort = new AbortController();
       running.abortController = abort;
-      const sub = await watchSubagent(running, abort.signal);
-      handleToRunning.delete(handle.id);
-      return {
-        name: handle.name,
-        finalMessage: sub.summary,
-        transcriptPath: sub.transcriptPath,
-        exitCode: sub.exitCode,
-        elapsedMs: sub.elapsed * 1000,
-        sessionId: sub.claudeSessionId,
-        error: sub.error,
-      };
+      // Mirror the tool-execution signal into the local abort so that
+      // session_shutdown (which aborts `running.abortController` directly)
+      // and caller cancellation share one abort path into watchSubagent.
+      let onToolAbort: (() => void) | null = null;
+      if (signal) {
+        if (signal.aborted) {
+          abort.abort();
+        } else {
+          onToolAbort = () => abort.abort();
+          signal.addEventListener("abort", onToolAbort, { once: true });
+        }
+      }
+      try {
+        const sub = await watchSubagent(running, abort.signal);
+        return {
+          name: handle.name,
+          finalMessage: sub.summary,
+          transcriptPath: sub.transcriptPath,
+          exitCode: sub.exitCode,
+          elapsedMs: sub.elapsed * 1000,
+          sessionId: sub.claudeSessionId,
+          error: sub.error,
+        };
+      } finally {
+        if (signal && onToolAbort) signal.removeEventListener("abort", onToolAbort);
+        handleToRunning.delete(handle.id);
+      }
     },
   };
 }

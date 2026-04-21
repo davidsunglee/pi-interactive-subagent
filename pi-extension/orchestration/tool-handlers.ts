@@ -43,7 +43,7 @@ export function registerOrchestrationTools(
         "Run a sequence of subagent tasks in order. Each task's output is available to the next " +
         "as `{previous}`. Stops on first failure. Blocks until the sequence completes.",
       parameters: SerialParams,
-      async execute(_id, params, _signal, _onUpdate, ctx) {
+      async execute(_id, params, signal, _onUpdate, ctx) {
         for (const task of params.tasks) {
           const blocked = selfSpawn(task.agent);
           if (blocked) return blocked;
@@ -52,7 +52,7 @@ export function registerOrchestrationTools(
         if (gate) return gate;
         const deps = depsFactory(ctx);
         try {
-          const out = await runSerial(params.tasks, {}, deps);
+          const out = await runSerial(params.tasks, { signal }, deps);
           return {
             content: [
               {
@@ -87,7 +87,7 @@ export function registerOrchestrationTools(
         "tasks complete. Partial failures are reported independently. Detached spawn is " +
         "tmux-only; other backends focus the new pane.",
       parameters: ParallelParams,
-      async execute(_id, params, _signal, _onUpdate, ctx) {
+      async execute(_id, params, signal, _onUpdate, ctx) {
         for (const task of params.tasks) {
           const blocked = selfSpawn(task.agent);
           if (blocked) return blocked;
@@ -98,7 +98,7 @@ export function registerOrchestrationTools(
         try {
           const out = await runParallel(
             params.tasks,
-            { maxConcurrency: params.maxConcurrency },
+            { maxConcurrency: params.maxConcurrency, signal },
             deps,
           );
           return {

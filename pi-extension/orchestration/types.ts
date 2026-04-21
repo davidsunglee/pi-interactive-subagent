@@ -41,10 +41,24 @@ export interface OrchestrationResult {
 /**
  * Dependencies that orchestration cores need injected, so tests can
  * mock all IO (pane spawning, sentinel waits, transcript reads).
+ *
+ * `signal` is the tool-execution AbortSignal threaded down from
+ * `subagent_serial` / `subagent_parallel`. `waitForCompletion` must
+ * observe it so user-initiated cancellation of the tool call aborts
+ * the running subagent's poll loop and frees its pane. `launch`
+ * accepts the signal symmetrically for future use (e.g. surface
+ * creation that honors cancellation).
  */
 export interface LauncherDeps {
-  launch(task: OrchestrationTask, defaultFocus: boolean): Promise<LaunchedHandle>;
-  waitForCompletion(handle: LaunchedHandle): Promise<OrchestrationResult>;
+  launch(
+    task: OrchestrationTask,
+    defaultFocus: boolean,
+    signal?: AbortSignal,
+  ): Promise<LaunchedHandle>;
+  waitForCompletion(
+    handle: LaunchedHandle,
+    signal?: AbortSignal,
+  ): Promise<OrchestrationResult>;
 }
 
 export interface LaunchedHandle {

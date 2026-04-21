@@ -8,6 +8,16 @@ import {
 
 export interface RunParallelOpts {
   maxConcurrency?: number;
+  /**
+   * Tool-execution AbortSignal. When aborted: in-flight task waits are
+   * interrupted and those tasks record a "cancelled" synthetic result;
+   * workers stop claiming new tasks; any tasks not yet launched at abort
+   * time are filled with synthetic "cancelled" results at their INPUT
+   * index so the returned `results` array length always matches
+   * `tasks.length`. `isError` is set to `true` when any cancellation
+   * occurs.
+   */
+  signal?: AbortSignal;
 }
 
 export interface RunParallelOutput {
@@ -36,6 +46,7 @@ export async function runParallel(
 
   async function worker(): Promise<void> {
     for (;;) {
+      if (opts.signal?.aborted) return;
       const i = nextIdx++;
       if (i >= tasks.length) return;
       const raw = tasks[i];
@@ -50,8 +61,8 @@ export async function runParallel(
       const startedAt = Date.now();
       let result: OrchestrationResult;
       try {
-        const handle = await deps.launch(task, false /* defaultFocus */);
-        result = await deps.waitForCompletion(handle);
+        const handle = await deps.launch(task, false /* defaultFocus */, opts.signal);
+        result = await deps.waitForCompletion(handle, opts.signal);
       } catch (err: any) {
         result = {
           name: task.name!,
@@ -71,6 +82,23 @@ export async function runParallel(
 
   const workers = Array.from({ length: Math.min(cap, tasks.length) }, () => worker());
   await Promise.all(workers);
+
+  if (opts.signal?.aborted) {
+    for (let i = 0; i < tasks.length; i++) {
+      if (!results[i]) {
+        const raw = tasks[i];
+        results[i] = {
+          name: raw.name ?? `task-${i + 1}`,
+          finalMessage: "",
+          transcriptPath: null,
+          exitCode: 1,
+          elapsedMs: 0,
+          error: "cancelled",
+        };
+        isError = true;
+      }
+    }
+  }
 
   return { results, isError };
 }

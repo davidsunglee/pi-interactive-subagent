@@ -169,6 +169,7 @@ Run subagent tasks sequentially. Each task may reference the previous task's fin
 - Blocks until the sequence completes (or errors).
 - Stops on the first non-zero exit; remaining tasks are not spawned. Prior step results (including the failing step) are still returned with `isError: true`.
 - If `launch` or the completion wait throws on a step, the failure is recorded as a synthetic result at that step's position — prior results are preserved and later steps are not spawned.
+- **Cancellation:** the tool-execution AbortSignal is threaded through the run. Cancelling the call aborts the in-flight step's wait (pane is closed, step is recorded with `error: "cancelled"`) and no further steps are launched; the cancelled run returns `isError: true` with prior + cancelled results.
 - Returns `{ results: [...], isError }` with one entry per completed step.
 - Default `focus` = `true` for each task (panes grab focus as they spawn, on tmux).
 
@@ -190,6 +191,7 @@ Run subagent tasks concurrently with a cap.
 - Blocks until **all** tasks in the batch complete (success or failure).
 - Default `maxConcurrency` = 4, hard cap 8 (call is rejected above the cap).
 - Partial failures don't cancel siblings; each task's result is reported independently at its input index. A thrown error from one task's `launch` or completion wait is captured as a synthetic failing result and does not stop the others.
+- **Cancellation:** the tool-execution AbortSignal is threaded through the run. Cancelling the call aborts every in-flight task's wait (panes are closed, tasks are recorded with `error: "cancelled"`) and stops workers from launching not-yet-started tasks (those are filled with synthetic cancelled entries at their input index, preserving the `results.length === tasks.length` invariant). The cancelled run returns `isError: true`.
 - Default `focus` = `false` for each task. Honored only on tmux (spawned via `split-window -d`); **other backends (cmux, zellij, wezterm) currently focus the new pane regardless** — documented backend limitation. Use the widget or native mux shortcuts to navigate.
 - Set `focus: true` on an individual task to override.
 
@@ -213,7 +215,7 @@ If for some reason the bundled plugin directory is missing (e.g. a truncated ins
 
 and the summary falls back to screen-scraped tail output rather than the Stop hook's structured final message. Orchestration still returns a result for that step; it just carries `transcriptPath: null` and a scraped summary.
 
-A dedicated "bundled-plugin directory not found" error, an installation-health probe, and a bounded fallback timeout are all listed under Deferred work. Separately, tool-signal → running-wait cancellation is also deferred (see Deferred work entry); today the only code path that aborts `RunningSubagent.abortController` is `session_shutdown`, so if you ever do end up needing to interrupt a stuck Claude subagent, ending the pi session is the reliable lever.
+A dedicated "bundled-plugin directory not found" error, an installation-health probe, and a bounded fallback timeout are all listed under Deferred work.
 
 ### Manual smoke test (per-skill migration)
 

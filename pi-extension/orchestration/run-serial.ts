@@ -5,7 +5,13 @@ import type {
 } from "./types.ts";
 
 export interface RunSerialOpts {
-  // reserved for future: abort signal, timeout, etc.
+  /**
+   * Tool-execution AbortSignal. When aborted: the in-flight step's wait
+   * is interrupted (surface closed, result recorded as a "cancelled"
+   * synthetic failure), remaining steps are not launched, and the run
+   * returns with `isError: true` carrying all prior + cancelled results.
+   */
+  signal?: AbortSignal;
 }
 
 export interface RunSerialOutput {
@@ -15,7 +21,7 @@ export interface RunSerialOutput {
 
 export async function runSerial(
   tasks: OrchestrationTask[],
-  _opts: RunSerialOpts,
+  opts: RunSerialOpts,
   deps: LauncherDeps,
 ): Promise<RunSerialOutput> {
   const results: OrchestrationResult[] = [];
@@ -31,6 +37,18 @@ export async function runSerial(
       task: raw.task.split("{previous}").join(previous),
     };
 
+    if (opts.signal?.aborted) {
+      results.push({
+        name: task.name!,
+        finalMessage: "",
+        transcriptPath: null,
+        exitCode: 1,
+        elapsedMs: 0,
+        error: "cancelled",
+      });
+      return { results, isError: true };
+    }
+
     // Normalize thrown errors from deps.launch / deps.waitForCompletion
     // into a synthetic failing OrchestrationResult. Without this, an upstream
     // throw (e.g. mux/surface creation failure) would reject this promise and
@@ -38,8 +56,8 @@ export async function runSerial(
     const startedAt = Date.now();
     let result: OrchestrationResult;
     try {
-      const handle = await deps.launch(task, true /* defaultFocus */);
-      result = await deps.waitForCompletion(handle);
+      const handle = await deps.launch(task, true /* defaultFocus */, opts.signal);
+      result = await deps.waitForCompletion(handle, opts.signal);
     } catch (err: any) {
       result = {
         name: task.name!,

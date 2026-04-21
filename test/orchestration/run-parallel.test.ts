@@ -199,6 +199,111 @@ describe("runParallel", () => {
     assert.equal(sawFocus, false);
   });
 
+  it("signal already aborted before run: no task is launched and results are all synthetic cancelled", async () => {
+    // Pre-aborted signal must short-circuit the worker loop on the very
+    // first iteration, before any deps.launch call, and fill all result
+    // slots with synthetic cancelled entries at their input index.
+    let launched = 0;
+    const deps: LauncherDeps = {
+      async launch() {
+        launched++;
+        return { id: "x", name: "t", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return { name: handle.name, finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+    const ac = new AbortController();
+    ac.abort();
+    const out = await runParallel(
+      [
+        { name: "t1", agent: "x", task: "t" },
+        { name: "t2", agent: "x", task: "t" },
+        { name: "t3", agent: "x", task: "t" },
+      ],
+      { maxConcurrency: 2, signal: ac.signal },
+      deps,
+    );
+    assert.equal(launched, 0);
+    assert.equal(out.isError, true);
+    assert.equal(out.results.length, 3);
+    for (const r of out.results) {
+      assert.equal(r.exitCode, 1);
+      assert.equal(r.error, "cancelled");
+    }
+    assert.equal(out.results[0].name, "t1");
+    assert.equal(out.results[1].name, "t2");
+    assert.equal(out.results[2].name, "t3");
+  });
+
+  it("signal aborted mid-run: in-flight waits honor the signal and unstarted tasks are marked cancelled", async () => {
+    // maxConcurrency=2 and 4 tasks. After the first two are launched,
+    // abort fires: the in-flight waits must see the signal and resolve
+    // as cancelled; workers must not pick up t3 / t4, which should end
+    // up as synthetic cancelled entries at their input indices.
+    let launched = 0;
+    const deps: LauncherDeps = {
+      async launch(task, _defaultFocus, _signal) {
+        launched++;
+        return { id: task.name!, name: task.name!, startTime: Date.now() };
+      },
+      async waitForCompletion(handle, signal) {
+        return new Promise((resolve) => {
+          if (signal?.aborted) {
+            resolve({
+              name: handle.name,
+              finalMessage: "",
+              transcriptPath: null,
+              exitCode: 1,
+              elapsedMs: 1,
+              error: "cancelled",
+            });
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              resolve({
+                name: handle.name,
+                finalMessage: "",
+                transcriptPath: null,
+                exitCode: 1,
+                elapsedMs: 1,
+                error: "cancelled",
+              });
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const ac = new AbortController();
+    const runPromise = runParallel(
+      [
+        { name: "t1", agent: "x", task: "t" },
+        { name: "t2", agent: "x", task: "t" },
+        { name: "t3", agent: "x", task: "t" },
+        { name: "t4", agent: "x", task: "t" },
+      ],
+      { maxConcurrency: 2, signal: ac.signal },
+      deps,
+    );
+    await new Promise((r) => setImmediate(r));
+    ac.abort();
+    const out = await runPromise;
+    assert.equal(launched, 2, "only the first two tasks should have been launched before abort");
+    assert.equal(out.results.length, 4);
+    assert.equal(out.isError, true);
+    assert.equal(out.results[0].name, "t1");
+    assert.equal(out.results[0].error, "cancelled");
+    assert.equal(out.results[1].name, "t2");
+    assert.equal(out.results[1].error, "cancelled");
+    assert.equal(out.results[2].name, "t3");
+    assert.equal(out.results[2].error, "cancelled");
+    assert.equal(out.results[3].name, "t4");
+    assert.equal(out.results[3].error, "cancelled");
+  });
+
   it("one task throwing does not cancel siblings; failing task appears at its input index", async () => {
     // v4 fix: a thrown error from deps.launch or deps.waitForCompletion for
     // one worker must not reject Promise.all for the whole run. Siblings
