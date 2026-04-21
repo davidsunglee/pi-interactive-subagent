@@ -4,6 +4,7 @@ import type {
   TranscriptMessage,
   UsageStats,
 } from "../subagents/backends/types.ts";
+export type { TranscriptMessage, UsageStats };
 
 export const OrchestrationTaskSchema = Type.Object({
   name: Type.Optional(Type.String({ description: "Widget label; auto-generated if omitted." })),
