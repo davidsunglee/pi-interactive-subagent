@@ -199,10 +199,14 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
     "subagent-done.ts",
   );
 
+  // pi's non-interactive JSON stream is `--mode json --print` in the installed
+  // CLI surface (no `--output-format` flag). `--print` / `-p` makes pi
+  // non-interactive; `--mode json` emits one JSON event per line on stdout.
   const args: string[] = [
     "--session", spec.subagentSessionFile,
     "-e", subagentDonePath,
-    "--output-format", "stream-json",
+    "--mode", "json",
+    "--print",
   ];
   if (spec.effectiveModel) {
     const model = spec.effectiveThinking
