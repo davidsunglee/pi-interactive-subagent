@@ -37,6 +37,14 @@ export const OrchestrationTaskSchema = Type.Object({
 
 export type OrchestrationTask = Static<typeof OrchestrationTaskSchema>;
 
+export type OrchestrationState =
+  | "pending"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 export interface OrchestrationResult {
   name: string;
   finalMessage: string;
@@ -47,6 +55,40 @@ export interface OrchestrationResult {
   error?: string;
   usage?: UsageStats;
   transcript?: TranscriptMessage[];
+  state?: OrchestrationState;
+  index?: number;
+  sessionKey?: string;
+  ping?: { name: string; message: string };
+}
+
+/**
+ * Per-task result on any orchestration (sync or async). Sync runs only
+ * populate terminal `state` values; async runs use the full machine and
+ * surface pre-terminal states (`pending`, `running`, `blocked`) in
+ * intermediate completion notifications.
+ */
+export interface OrchestratedTaskResult {
+  name: string;
+  index: number;
+  state: OrchestrationState;
+  finalMessage?: string;
+  transcriptPath?: string | null;
+  elapsedMs?: number;
+  exitCode?: number;
+  sessionKey?: string;
+  error?: string;
+  usage?: UsageStats;
+  transcript?: TranscriptMessage[];
+}
+
+/**
+ * Envelope returned immediately from `subagent_run_serial` / `subagent_run_parallel`
+ * when `wait: false`. Task manifest mirrors input order with `state: "pending"`.
+ */
+export interface AsyncDispatchEnvelope {
+  orchestrationId: string;
+  tasks: Array<{ name: string; index: number; state: "pending" }>;
+  isError: false;
 }
 
 /**
@@ -77,6 +119,13 @@ export interface LaunchedHandle {
   id: string;
   name: string;
   startTime: number;
+  /**
+   * Resume-addressable identifier for this child. Same value the parent
+   * will pass back through `subagent_resume({ sessionPath })` for pi-backed
+   * children, or the Claude session id for Claude-backed children. Used to
+   * key the orchestration registry's ownership map.
+   */
+  sessionKey?: string;
 }
 
 export const MAX_PARALLEL_HARD_CAP = 8;
