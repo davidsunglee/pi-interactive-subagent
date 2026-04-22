@@ -36,6 +36,7 @@ import { preflightOrchestration } from "./preflight-orchestration.ts";
 import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
+import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
 import {
   SubagentParams,
   type SubagentParamsType,
@@ -477,9 +478,11 @@ interface ClaudeCmdInputs {
   sentinelFile: string;
   pluginDir: string | undefined; // if existsSync, pass --plugin-dir
   model: string | undefined;
-  appendSystemPrompt: string | undefined;
+  identity: string | null | undefined;
+  systemPromptMode: "append" | "replace" | undefined;
   resumeSessionId: string | undefined;
   effectiveThinking: string | undefined;
+  effectiveTools?: string;
   task: string;
 }
 
@@ -498,15 +501,54 @@ export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
   if (effort) {
     parts.push("--effort", effort);
   }
-  if (input.appendSystemPrompt) {
-    parts.push("--append-system-prompt", shellEscape(input.appendSystemPrompt));
+  if (input.identity) {
+    const flag = input.systemPromptMode === "replace"
+      ? "--system-prompt"
+      : "--append-system-prompt";
+    parts.push(flag, shellEscape(input.identity));
   }
   if (input.resumeSessionId) {
     parts.push("--resume", shellEscape(input.resumeSessionId));
   }
-  parts.push(shellEscape(input.task));
+  if (input.effectiveTools) {
+    const claudeTools = new Set<string>();
+    for (const tool of input.effectiveTools
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)) {
+      const mapped = PI_TO_CLAUDE_TOOLS[tool.toLowerCase()];
+      if (mapped) claudeTools.add(mapped);
+    }
+    if (claudeTools.size > 0) {
+      parts.push("--tools", shellEscape([...claudeTools].join(",")));
+    }
+  }
+  if (input.task !== "") {
+    parts.push("--");
+    parts.push(shellEscape(input.task));
+  }
   return parts;
 }
+
+/**
+ * Emit a single-line stderr warning when a Claude subagent has declared
+ * `skills:` frontmatter. Claude CLI has no equivalent — we silently drop
+ * them on the headless backend too, so pane + headless share this wording
+ * for regression-test parity (review-v11 finding 2).
+ */
+export function warnClaudeSkillsDropped(
+  subagentName: string,
+  effectiveSkills: string | undefined,
+): void {
+  if (!effectiveSkills || effectiveSkills.trim() === "") return;
+  process.stderr.write(
+    `[pi-interactive-subagent] ${subagentName}: ignoring skills=${effectiveSkills} on Claude path — not supported in v1\n`,
+  );
+}
+
+// Re-export shellEscape so tests can verify exact argv encoding against the
+// same helper buildClaudeCmdParts uses — avoids drift if one side changes.
+export { shellEscape };
 
 /**
  * Sanitize an agent/name string for safe filesystem use in launch-script names.
@@ -561,6 +603,11 @@ export async function launchSubagent(
     const pluginDir = join(dirname(new URL(import.meta.url).pathname), "plugin");
     const pluginDirResolved = existsSync(pluginDir) ? pluginDir : undefined;
 
+    // Claude CLI has no skills equivalent — emit the shared warning before
+    // we build the argv (review-v11 finding 2: pane + headless must warn with
+    // identical wording).
+    warnClaudeSkillsDropped(params.name, spec.effectiveSkills);
+
     const cmdParts = buildClaudeCmdParts({
       sentinelFile,
       pluginDir: pluginDirResolved,
@@ -569,9 +616,11 @@ export async function launchSubagent(
       model: spec.claudeModelArg,
       // Identity reaches Claude via the system-prompt flag only. agentDefs.body
       // wins over params.systemPrompt — see review-v11 finding 1 regression test.
-      appendSystemPrompt: spec.identity ?? undefined,
+      identity: spec.identity,
+      systemPromptMode: spec.systemPromptMode,
       resumeSessionId: spec.resumeSessionId,
       effectiveThinking: spec.effectiveThinking,
+      effectiveTools: spec.effectiveTools,
       // Claude CLI prompt does not support @file substitution. We hand it the
       // naked task body (roleBlock stripped — identity arrives via the flag).
       task: spec.claudeTaskBody,
