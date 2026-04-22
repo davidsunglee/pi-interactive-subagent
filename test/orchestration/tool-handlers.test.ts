@@ -247,6 +247,38 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.results[1].error, "cancelled");
   });
 
+  it("subagent_serial (wait:true) returns results with index on every task per the public envelope", async () => {
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => noopDeps, () => true);
+    const serial = tools.find((t) => t.name === "subagent_serial");
+    const out = await serial.execute(
+      "call-envelope-serial",
+      { tasks: [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+    assert.equal(out.details.results[0].index, 0);
+    assert.equal(out.details.results[1].index, 1);
+    assert.equal(out.details.results[0].state, "completed");
+  });
+
+  it("subagent_parallel (wait:true) returns results with index on every task per the public envelope", async () => {
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => noopDeps, () => true);
+    const parallel = tools.find((t) => t.name === "subagent_parallel");
+    const out = await parallel.execute(
+      "call-envelope-parallel",
+      { tasks: [{ name: "t1", agent: "x", task: "t1" }, { name: "t2", agent: "x", task: "t2" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+    assert.equal(out.details.results[0].index, 0);
+    assert.equal(out.details.results[1].index, 1);
+    assert.equal(out.details.results[0].state, "completed");
+  });
+
   it("subagent_parallel short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
     let launched = 0;
     const countingDeps: LauncherDeps = {

@@ -89,13 +89,17 @@ export async function runParallel(
       } catch (err: any) {
         result = {
           name: task.name!,
+          index: i,
           finalMessage: "",
           transcriptPath: null,
           exitCode: 1,
           elapsedMs: Date.now() - startedAt,
           error: err?.message ?? String(err),
+          state: "failed",
         };
       }
+      result.index = i;
+      result.state = result.exitCode === 0 && !result.error ? "completed" : (result.state ?? "failed");
       results[i] = result;
       if (result.exitCode !== 0 || result.error) {
         isError = true;
@@ -112,11 +116,13 @@ export async function runParallel(
         const raw = tasks[i];
         results[i] = {
           name: raw.name ?? `task-${i + 1}`,
+          index: i,
           finalMessage: "",
           transcriptPath: null,
           exitCode: 1,
           elapsedMs: 0,
           error: "cancelled",
+          state: "cancelled",
         };
         isError = true;
       }

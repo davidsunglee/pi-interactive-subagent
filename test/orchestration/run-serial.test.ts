@@ -289,3 +289,47 @@ describe("runSerial", () => {
     assert.equal(out.isError, true);
   });
 });
+
+describe("runSerial state + index annotation", () => {
+  it("annotates every successful step with state: 'completed' and input-order index", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "A" }, { finalMessage: "B" }]);
+    const out = await runSerial(
+      [
+        { agent: "x", task: "t1" },
+        { agent: "x", task: "t2" },
+      ],
+      {},
+      deps,
+    );
+    assert.equal((out.results[0] as any).state, "completed");
+    assert.equal((out.results[0] as any).index, 0);
+    assert.equal((out.results[1] as any).state, "completed");
+    assert.equal((out.results[1] as any).index, 1);
+  });
+
+  it("annotates failing step with state: 'failed'", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "A" }, { finalMessage: "bad", exitCode: 2 }]);
+    const out = await runSerial(
+      [
+        { agent: "x", task: "t1" },
+        { agent: "x", task: "t2" },
+      ],
+      {},
+      deps,
+    );
+    assert.equal((out.results[0] as any).state, "completed");
+    assert.equal((out.results[1] as any).state, "failed");
+  });
+
+  it("annotates cancelled step with state: 'cancelled'", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const { deps } = fakeDeps([{ finalMessage: "" }]);
+    const out = await runSerial(
+      [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }],
+      { signal: ac.signal },
+      deps,
+    );
+    assert.equal((out.results[0] as any).state, "cancelled");
+  });
+});

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { runSerial } from "./run-serial.ts";
 import { runParallel } from "./run-parallel.ts";
-import { OrchestrationTaskSchema, type LauncherDeps } from "./types.ts";
+import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult } from "./types.ts";
 
 const SerialParams = Type.Object({
   tasks: Type.Array(OrchestrationTaskSchema),
@@ -64,7 +64,10 @@ export function registerOrchestrationTools(
                 text: summarize("serial", out.results, out.isError),
               },
             ],
-            details: out,
+            details: {
+              ...out,
+              results: toPublicResults(out.results),
+            },
           };
         } catch (err: any) {
           return {
@@ -116,7 +119,10 @@ export function registerOrchestrationTools(
                 text: summarize("parallel", out.results, out.isError),
               },
             ],
-            details: out,
+            details: {
+              ...out,
+              results: toPublicResults(out.results),
+            },
           };
         } catch (err: any) {
           const msg = err?.message ?? String(err);
@@ -133,6 +139,22 @@ export function registerOrchestrationTools(
       },
     });
   }
+}
+
+function toPublicResults(results: OrchestrationResult[]): OrchestratedTaskResult[] {
+  return results.map((r, i) => ({
+    name: r.name,
+    index: r.index ?? i,
+    state: r.state ?? (r.exitCode === 0 && !r.error ? "completed" : "failed"),
+    finalMessage: r.finalMessage,
+    transcriptPath: r.transcriptPath ?? null,
+    elapsedMs: r.elapsedMs,
+    exitCode: r.exitCode,
+    sessionKey: r.sessionKey,
+    error: r.error,
+    usage: r.usage,
+    transcript: r.transcript,
+  }));
 }
 
 function summarize(mode: "serial" | "parallel", results: any[], isError: boolean): string {

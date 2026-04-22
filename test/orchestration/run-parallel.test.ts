@@ -350,3 +350,50 @@ describe("runParallel", () => {
     assert.equal(out.results[3].exitCode, 0);
   });
 });
+
+describe("runParallel state + index annotation", () => {
+  it("annotates successful tasks with state: 'completed' and failures with 'failed', each with its input-order index", async () => {
+    const deps: LauncherDeps = {
+      async launch(task) {
+        return { id: task.task, name: task.name ?? "task", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        const exit = handle.name === "bad" ? 1 : 0;
+        return {
+          name: handle.name, finalMessage: "", transcriptPath: null,
+          exitCode: exit, elapsedMs: 1,
+        };
+      },
+    };
+    const out = await runParallel(
+      [
+        { name: "ok", agent: "x", task: "t1" },
+        { name: "bad", agent: "x", task: "t2" },
+      ],
+      {},
+      deps,
+    );
+    assert.equal((out.results[0] as any).state, "completed");
+    assert.equal((out.results[0] as any).index, 0);
+    assert.equal((out.results[1] as any).state, "failed");
+    assert.equal((out.results[1] as any).index, 1);
+  });
+
+  it("annotates pre-aborted tasks with state: 'cancelled'", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const deps: LauncherDeps = {
+      async launch() { return { id: "x", name: "x", startTime: Date.now() }; },
+      async waitForCompletion(h) {
+        return { name: h.name, finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+    const out = await runParallel(
+      [{ name: "t1", agent: "x", task: "t" }, { name: "t2", agent: "x", task: "t" }],
+      { signal: ac.signal },
+      deps,
+    );
+    assert.equal((out.results[0] as any).state, "cancelled");
+    assert.equal((out.results[1] as any).state, "cancelled");
+  });
+});

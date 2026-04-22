@@ -51,11 +51,13 @@ export async function runSerial(
     if (opts.signal?.aborted) {
       results.push({
         name: task.name!,
+        index: i,
         finalMessage: "",
         transcriptPath: null,
         exitCode: 1,
         elapsedMs: 0,
         error: "cancelled",
+        state: "cancelled",
       });
       return { results, isError: true };
     }
@@ -91,8 +93,11 @@ export async function runSerial(
         exitCode: 1,
         elapsedMs: Date.now() - startedAt,
         error: err?.message ?? String(err),
+        state: "failed",
       };
     }
+    result.index = i;
+    result.state = result.exitCode === 0 && !result.error ? "completed" : (result.state ?? "failed");
     results.push(result);
 
     if (result.exitCode !== 0 || result.error) {
