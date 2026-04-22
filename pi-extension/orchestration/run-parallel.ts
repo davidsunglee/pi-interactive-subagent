@@ -18,6 +18,17 @@ export interface RunParallelOpts {
    * occurs.
    */
   signal?: AbortSignal;
+  /**
+   * Tool-framework onUpdate callback. When set, per-task partial snapshots
+   * are wrapped in the tool-framework `{ content, details }` shape and
+   * forwarded. The details payload carries the full in-flight results
+   * array (input-indexed, with `undefined` slots for unstarted tasks) so
+   * the UI can render a live-updating grid.
+   */
+  onUpdate?: (content: {
+    content: { type: "text"; text: string }[];
+    details: any;
+  }) => void;
 }
 
 export interface RunParallelOutput {
@@ -60,9 +71,21 @@ export async function runParallel(
       // aggregated array remains input-ordered.
       const startedAt = Date.now();
       let result: OrchestrationResult;
+      const stepOnUpdate = opts.onUpdate
+        ? (partial: OrchestrationResult) => {
+            const inflight = results.slice();
+            inflight[i] = partial;
+            opts.onUpdate!({
+              content: [
+                { type: "text", text: summarizeInflightParallel(inflight) },
+              ],
+              details: { results: inflight, isError: false, inflight: true },
+            });
+          }
+        : undefined;
       try {
         const handle = await deps.launch(task, false /* defaultFocus */, opts.signal);
-        result = await deps.waitForCompletion(handle, opts.signal);
+        result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate);
       } catch (err: any) {
         result = {
           name: task.name!,
@@ -101,4 +124,23 @@ export async function runParallel(
   }
 
   return { results, isError };
+}
+
+function summarizeInflightParallel(
+  results: (OrchestrationResult | undefined)[],
+): string {
+  const total = results.length;
+  const done = results.filter((r) => r !== undefined).length;
+  const lines = [`parallel orchestration (in-flight): ${done}/${total} task(s)`];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (!r) {
+      lines.push(`- [${i + 1}]: (pending)`);
+      continue;
+    }
+    const first = (r.finalMessage ?? "").split("\n").find((l) => l.trim()) ?? "";
+    const trimmed = first.length > 200 ? first.slice(0, 200) + "…" : first;
+    lines.push(`- ${r.name}: exit=${r.exitCode} (${r.elapsedMs}ms) — ${trimmed}`);
+  }
+  return lines.join("\n");
 }

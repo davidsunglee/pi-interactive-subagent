@@ -52,7 +52,11 @@ export function registerOrchestrationTools(
         if (gate) return gate;
         const deps = depsFactory(ctx);
         try {
-          const out = await runSerial(params.tasks, { signal }, deps);
+          const out = await runSerial(
+            params.tasks,
+            { signal, onUpdate: _onUpdate as any },
+            deps,
+          );
           return {
             content: [
               {
@@ -98,7 +102,11 @@ export function registerOrchestrationTools(
         try {
           const out = await runParallel(
             params.tasks,
-            { maxConcurrency: params.maxConcurrency, signal },
+            {
+              maxConcurrency: params.maxConcurrency,
+              signal,
+              onUpdate: _onUpdate as any,
+            },
             deps,
           );
           return {

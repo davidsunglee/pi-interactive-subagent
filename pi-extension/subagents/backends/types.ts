@@ -69,5 +69,9 @@ export interface Backend {
     defaultFocus: boolean,
     signal?: AbortSignal,
   ): Promise<LaunchedHandle>;
-  watch(handle: LaunchedHandle, signal?: AbortSignal): Promise<BackendResult>;
+  watch(
+    handle: LaunchedHandle,
+    signal?: AbortSignal,
+    onUpdate?: (partial: BackendResult) => void,
+  ): Promise<BackendResult>;
 }

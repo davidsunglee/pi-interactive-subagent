@@ -69,6 +69,7 @@ export interface LauncherDeps {
   waitForCompletion(
     handle: LaunchedHandle,
     signal?: AbortSignal,
+    onUpdate?: (partial: OrchestrationResult) => void,
   ): Promise<OrchestrationResult>;
 }
 

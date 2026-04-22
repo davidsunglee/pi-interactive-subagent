@@ -45,8 +45,27 @@ export function makeDefaultDeps(ctx: {
     async waitForCompletion(
       handle: LaunchedHandle,
       signal?: AbortSignal,
+      onUpdate?: (partial: OrchestrationResult) => void,
     ): Promise<OrchestrationResult> {
-      const result = await backend.watch(handle, signal);
+      const result = await backend.watch(
+        handle,
+        signal,
+        onUpdate
+          ? (partial) => {
+              onUpdate({
+                name: partial.name,
+                finalMessage: partial.finalMessage,
+                transcriptPath: partial.transcriptPath,
+                exitCode: partial.exitCode,
+                elapsedMs: partial.elapsedMs,
+                sessionId: partial.sessionId,
+                error: partial.error,
+                usage: partial.usage,
+                transcript: partial.transcript,
+              });
+            }
+          : undefined,
+      );
       return {
         name: result.name,
         finalMessage: result.finalMessage,

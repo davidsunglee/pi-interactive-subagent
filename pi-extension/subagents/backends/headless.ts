@@ -29,6 +29,20 @@ interface HeadlessLaunch {
   startTime: number;
   promise: Promise<BackendResult>;
   abort: AbortController;
+  /**
+   * Most recent partial snapshot emitted by the runner (pi/Claude path or an
+   * injected test runner). Buffered so `watch()` can replay the latest partial
+   * immediately to a late-bound `onUpdate`. The invariant: headless work
+   * starts inside `launch()`, so partials may fire before `watch()` attaches —
+   * we must not drop them.
+   */
+  latestPartial?: BackendResult;
+  /**
+   * `watch()` installs this once it attaches. `emitPartial()` calls it (if
+   * present) with a fresh clone of the snapshot. Unset before attachment;
+   * partials are still buffered via `latestPartial`.
+   */
+  onUpdate?: (p: BackendResult) => void;
 }
 
 // Module-private spawn reference that the unit test harness can swap out.
@@ -36,9 +50,95 @@ interface HeadlessLaunch {
 // rewriting `node:child_process` (which is frozen on ESM import).
 let spawnImpl: typeof realSpawn = realSpawn;
 
+function emitPartial(entry: HeadlessLaunch, snapshot: BackendResult): void {
+  entry.latestPartial = { ...snapshot };
+  entry.onUpdate?.({ ...entry.latestPartial });
+}
+
 export const __test__ = {
   setSpawn(fn: typeof realSpawn): void { spawnImpl = fn; },
   restoreSpawn(): void { spawnImpl = realSpawn; },
+  /**
+   * Build a headless Backend whose pi/Claude runners are replaced by the
+   * injected `runner`. Used by unit tests to drive deterministic
+   * emit/finish sequences without spawning real processes.
+   *
+   * The `emitPartial` passed to the runner closes over the launch entry
+   * created inside `launch()`, so partials flow through the same buffer +
+   * late-bound `onUpdate` path as production runners.
+   */
+  makeHeadlessBackendWithRunner(
+    ctx: { sessionManager: ExtensionContext["sessionManager"]; cwd: string },
+    runner: (args: {
+      spec: BackendLaunchParams;
+      startTime: number;
+      abort: AbortSignal;
+      emitPartial: (snapshot: BackendResult) => void;
+    }) => Promise<BackendResult>,
+  ): Backend {
+    const launches = new Map<string, HeadlessLaunch>();
+    return {
+      async launch(
+        params: BackendLaunchParams,
+        _defaultFocus: boolean,
+        signal?: AbortSignal,
+      ): Promise<LaunchedHandle> {
+        const id = Math.random().toString(16).slice(2, 10);
+        const startTime = Date.now();
+        const abort = new AbortController();
+        if (signal) {
+          if (signal.aborted) abort.abort();
+          else signal.addEventListener("abort", () => abort.abort(), { once: true });
+        }
+        const name = params.name ?? "subagent";
+        const entry: HeadlessLaunch = {
+          id,
+          name,
+          startTime,
+          promise: Promise.resolve<BackendResult>(null as any),
+          abort,
+        };
+        entry.promise = runner({
+          spec: params,
+          startTime,
+          abort: abort.signal,
+          emitPartial: (snap) => emitPartial(entry, snap),
+        });
+        launches.set(id, entry);
+        return { id, name, startTime };
+      },
+      async watch(
+        handle: LaunchedHandle,
+        watchSignal?: AbortSignal,
+        onUpdate?: (partial: BackendResult) => void,
+      ): Promise<BackendResult> {
+        const entry = launches.get(handle.id);
+        if (!entry) {
+          return {
+            name: handle.name,
+            finalMessage: "",
+            transcriptPath: null,
+            exitCode: 1,
+            elapsedMs: 0,
+            error: `no launch entry for ${handle.id}`,
+          };
+        }
+        try {
+          if (watchSignal) {
+            if (watchSignal.aborted) entry.abort.abort();
+            else watchSignal.addEventListener("abort", () => entry.abort.abort(), { once: true });
+          }
+          entry.onUpdate = onUpdate;
+          if (entry.latestPartial && onUpdate) {
+            onUpdate({ ...entry.latestPartial });
+          }
+          return await entry.promise;
+        } finally {
+          launches.delete(handle.id);
+        }
+      },
+    };
+  },
 };
 
 function emptyUsage(): UsageStats {
@@ -96,16 +196,28 @@ export function makeHeadlessBackend(ctx: {
         ctx,
       );
 
-      const promise: Promise<BackendResult> =
+      const entry: HeadlessLaunch = {
+        id,
+        name: spec.name,
+        startTime,
+        promise: Promise.resolve<BackendResult>(null as any),
+        abort,
+      };
+      const emit = (snap: BackendResult): void => emitPartial(entry, snap);
+      entry.promise =
         spec.effectiveCli === "claude"
-          ? runClaudeHeadless({ spec, startTime, abort: abort.signal, ctx })
-          : runPiHeadless({ spec, startTime, abort: abort.signal, ctx });
+          ? runClaudeHeadless({ spec, startTime, abort: abort.signal, ctx, emitPartial: emit })
+          : runPiHeadless({ spec, startTime, abort: abort.signal, ctx, emitPartial: emit });
 
-      launches.set(id, { id, name: spec.name, startTime, promise, abort });
+      launches.set(id, entry);
       return { id, name: spec.name, startTime };
     },
 
-    async watch(handle: LaunchedHandle, signal?: AbortSignal): Promise<BackendResult> {
+    async watch(
+      handle: LaunchedHandle,
+      signal?: AbortSignal,
+      onUpdate?: (partial: BackendResult) => void,
+    ): Promise<BackendResult> {
       const entry = launches.get(handle.id);
       if (!entry) {
         return {
@@ -122,6 +234,10 @@ export function makeHeadlessBackend(ctx: {
           if (signal.aborted) entry.abort.abort();
           else signal.addEventListener("abort", () => entry.abort.abort(), { once: true });
         }
+        entry.onUpdate = onUpdate;
+        if (entry.latestPartial && onUpdate) {
+          onUpdate({ ...entry.latestPartial });
+        }
         return await entry.promise;
       } finally {
         launches.delete(handle.id);
@@ -135,6 +251,7 @@ interface RunParams {
   startTime: number;
   abort: AbortSignal;
   ctx: { sessionManager: ExtensionContext["sessionManager"]; cwd: string };
+  emitPartial: (snapshot: BackendResult) => void;
 }
 
 function makeAbortHandler(proc: ChildProcess, isExited: () => boolean): () => void {
@@ -174,7 +291,7 @@ export function projectPiMessageToTranscript(msg: PiStreamMessage): TranscriptMe
 }
 
 async function runPiHeadless(p: RunParams): Promise<BackendResult> {
-  const { spec, startTime, abort, ctx } = p;
+  const { spec, startTime, abort, ctx, emitPartial: emit } = p;
   const transcript: TranscriptMessage[] = [];
   const usage = emptyUsage();
   let stderr = "";
@@ -297,6 +414,17 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
           const stop = (msg as any).stopReason;
           if (stop === "endTurn" || stop === "stop" || stop === "error") terminalEvent = true;
         }
+        // Emit a partial snapshot on each message_end (not on every delta line,
+        // which would spam). Reflects accumulated transcript + usage so far.
+        emit({
+          name: spec.name,
+          finalMessage: getFinalOutput(transcript),
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: Date.now() - startTime,
+          usage,
+          transcript,
+        });
       } else if (event.type === "tool_result_end" && event.message) {
         transcript.push(projectPiMessageToTranscript(event.message as PiStreamMessage));
       }
@@ -360,7 +488,7 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
 }
 
 async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
-  const { spec, startTime, abort, ctx } = p;
+  const { spec, startTime, abort, ctx, emitPartial: emit } = p;
   const transcript: TranscriptMessage[] = [];
   let usage: UsageStats = emptyUsage();
   let stderr = "";
@@ -418,9 +546,43 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
       if (event.type === "result") {
         terminalResult = parseClaudeResult(event);
         usage = terminalResult.usage;
+        // Terminal result event — emit a snapshot reflecting final usage and
+        // final message. The `close` handler will still emit the ultimate
+        // resolved BackendResult; this gives watchers a usage-complete partial
+        // before archival.
+        emit({
+          name: spec.name,
+          finalMessage: terminalResult.finalOutput ?? "",
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: Date.now() - startTime,
+          sessionId,
+          usage,
+          transcript,
+        });
       } else {
         const msgs = parseClaudeStreamEvent(event);
-        if (msgs) for (const m of msgs) transcript.push(m);
+        if (msgs) {
+          let sawAssistant = false;
+          for (const m of msgs) {
+            transcript.push(m);
+            if (m.role === "assistant") sawAssistant = true;
+          }
+          if (sawAssistant) {
+            // Emit a partial on assistant events (not on every tool-result
+            // fragment or user message, which would spam).
+            emit({
+              name: spec.name,
+              finalMessage: getFinalOutput(transcript),
+              transcriptPath: null,
+              exitCode: 0,
+              elapsedMs: Date.now() - startTime,
+              sessionId,
+              usage,
+              transcript,
+            });
+          }
+        }
       }
     };
 
