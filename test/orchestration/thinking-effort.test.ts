@@ -123,6 +123,38 @@ describe("buildClaudeCmdParts", () => {
     assert.equal(parts.includes("--allowedTools"), false);
   });
 
+  it("omits --tools when every effectiveTools entry is unmapped (no --tools '' emission)", () => {
+    const parts = buildClaudeCmdParts({
+      sentinelFile: "/tmp/s",
+      pluginDir: undefined,
+      model: "sonnet-4-6",
+      identity: undefined,
+      systemPromptMode: undefined,
+      resumeSessionId: undefined,
+      effectiveThinking: undefined,
+      effectiveTools: "weird, nonexistent",
+      task: "do things",
+    });
+    assert.equal(parts.includes("--tools"), false,
+      "all-unmapped input must skip --tools entirely; emitting --tools with an empty list would mean 'no tools allowed' — a very different semantic");
+  });
+
+  it("treats systemPromptMode=\"append\" the same as undefined (explicit append is still --append-system-prompt)", () => {
+    const parts = buildClaudeCmdParts({
+      sentinelFile: "/tmp/s",
+      pluginDir: undefined,
+      model: "sonnet-4-6",
+      identity: "APPEND_IDENTITY",
+      systemPromptMode: "append",
+      resumeSessionId: undefined,
+      effectiveThinking: undefined,
+      task: "do",
+    });
+    assert.ok(parts.includes("--append-system-prompt"),
+      "explicit systemPromptMode=\"append\" must emit --append-system-prompt, matching the undefined default");
+    assert.equal(parts.includes("--system-prompt"), false);
+  });
+
   it("appends task separated by -- so variadic --tools does not consume it (review-v6 blocker 1)", () => {
     const parts = buildClaudeCmdParts({
       sentinelFile: "/tmp/s",
