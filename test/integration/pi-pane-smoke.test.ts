@@ -2,7 +2,6 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   getAvailableBackends,
@@ -15,31 +14,25 @@ import {
 } from "./harness.ts";
 import { launchSubagent, watchSubagent } from "../../pi-extension/subagents/index.ts";
 
-const CLAUDE_AVAILABLE = (() => {
+const PI_AVAILABLE = (() => {
   try {
-    execSync("which claude", { stdio: "pipe" });
+    execSync("which pi", { stdio: "pipe" });
     return true;
   } catch {
     return false;
   }
 })();
-const PLUGIN_DIR = join(
-  new URL("../../pi-extension/subagents/plugin", import.meta.url).pathname,
-);
-const PLUGIN_PRESENT = existsSync(join(PLUGIN_DIR, "hooks", "on-stop.sh"));
 const backends = getAvailableBackends();
-
-const SHOULD_SKIP = !CLAUDE_AVAILABLE || !PLUGIN_PRESENT || backends.length === 0;
+const SHOULD_SKIP = !PI_AVAILABLE || backends.length === 0;
 
 if (SHOULD_SKIP) {
   console.log(
-    "⚠️  claude-sentinel-roundtrip skipped: " +
-      `CLAUDE=${CLAUDE_AVAILABLE} PLUGIN=${PLUGIN_PRESENT} BACKENDS=${backends.length}`,
+    `⚠️  pi-pane-smoke skipped: PI=${PI_AVAILABLE} BACKENDS=${backends.length}`,
   );
 }
 
 for (const backend of backends) {
-  describe(`claude-sentinel-roundtrip [${backend}]`, { skip: SHOULD_SKIP, timeout: PI_TIMEOUT * 2 }, () => {
+  describe(`pi-pane-smoke [${backend}]`, { skip: SHOULD_SKIP, timeout: PI_TIMEOUT * 2 }, () => {
     let prevMux: string | undefined;
     let env: TestEnv;
 
@@ -53,7 +46,7 @@ for (const backend of backends) {
       restoreBackend(prevMux);
     });
 
-    it("archives transcriptPath under ~/.pi/agent/sessions/claude-code/ after completion", async () => {
+    it("spawns test-echo agent, completes with clean exit, archives session", async () => {
       const ctx = {
         sessionManager: {
           getSessionFile: () => join(env.dir, "session.jsonl"),
@@ -65,9 +58,9 @@ for (const backend of backends) {
 
       const running = await launchSubagent(
         {
-          name: "ClaudeRoundtrip",
+          name: "PiPaneSmoke",
           task: "Reply with exactly: OK",
-          cli: "claude",
+          agent: "test-echo",
         },
         ctx,
       );
@@ -78,13 +71,9 @@ for (const backend of backends) {
 
       assert.equal(result.exitCode, 0, `expected clean exit, got ${result.exitCode}`);
       assert.ok(result.summary && result.summary.trim().length > 0, "summary must be non-empty");
-      assert.ok(result.transcriptPath, "transcriptPath must be non-null");
-      const archiveRoot = join(homedir(), ".pi", "agent", "sessions", "claude-code");
-      assert.ok(
-        result.transcriptPath!.startsWith(archiveRoot),
-        `transcriptPath must be under ${archiveRoot}, got ${result.transcriptPath}`,
-      );
-      assert.ok(existsSync(result.transcriptPath!), "archived transcript file must exist");
+      assert.ok(result.sessionFile, "sessionFile must be set on pi path");
+      assert.ok(existsSync(result.sessionFile!), "session file must exist on disk");
+      assert.equal(result.transcriptPath, result.sessionFile, "transcriptPath aliases sessionFile on pi path");
     });
   });
 }

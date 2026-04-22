@@ -1,5 +1,10 @@
 import type { Static, TObject } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
+import type {
+  TranscriptMessage,
+  UsageStats,
+} from "../subagents/backends/types.ts";
+export type { TranscriptMessage, UsageStats };
 
 export const OrchestrationTaskSchema = Type.Object({
   name: Type.Optional(Type.String({ description: "Widget label; auto-generated if omitted." })),
@@ -20,10 +25,14 @@ export const OrchestrationTaskSchema = Type.Object({
   fork: Type.Optional(Type.Boolean({ description: "Force full-context fork mode for this step, overriding any agent frontmatter session-mode." })),
   resumeSessionId: Type.Optional(Type.String({ description: "Resume a previous Claude Code session by ID for this step." })),
   focus: Type.Optional(Type.Boolean()),
-  // Note: `interactive` and `permissionMode` are intentionally omitted —
-  // these are the only `SubagentParams`-adjacent fields that `launchSubagent()`
-  // does not currently accept. Add them here only when plumbing all the way
-  // through `SubagentParams` / `launchSubagent`.
+  interactive: Type.Optional(
+    Type.Boolean({
+      description:
+        "Vestigial compat field. Accepted so legacy callers that still send `interactive` validate cleanly; has no runtime effect in v1.",
+    }),
+  ),
+  // Note: `permissionMode` is intentionally omitted — `launchSubagent()` does not
+  // accept it. Add it here only when plumbing all the way through.
 });
 
 export type OrchestrationTask = Static<typeof OrchestrationTaskSchema>;
@@ -36,6 +45,8 @@ export interface OrchestrationResult {
   elapsedMs: number;
   sessionId?: string;
   error?: string;
+  usage?: UsageStats;
+  transcript?: TranscriptMessage[];
 }
 
 /**
@@ -58,6 +69,7 @@ export interface LauncherDeps {
   waitForCompletion(
     handle: LaunchedHandle,
     signal?: AbortSignal,
+    onUpdate?: (partial: OrchestrationResult) => void,
   ): Promise<OrchestrationResult>;
 }
 

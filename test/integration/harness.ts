@@ -130,6 +130,22 @@ export function createTestEnv(backend: MuxBackend): TestEnv {
 }
 
 /**
+ * Seed `<dir>/.pi/agents/` with the test agent definitions (`test-echo`,
+ * `test-ping`). Used by headless integration tests that don't go through
+ * `createTestEnv()` (which is mux-coupled).
+ */
+export function copyTestAgents(dir: string): void {
+  const agentsDir = join(dir, ".pi", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  if (!existsSync(TEST_AGENTS_SRC)) return;
+  for (const file of readdirSync(TEST_AGENTS_SRC)) {
+    if (file.endsWith(".md")) {
+      cpSync(join(TEST_AGENTS_SRC, file), join(agentsDir, file));
+    }
+  }
+}
+
+/**
  * Clean up all resources created during the test.
  */
 export function cleanupTestEnv(env: TestEnv): void {

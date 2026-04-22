@@ -12,6 +12,17 @@ export interface RunSerialOpts {
    * returns with `isError: true` carrying all prior + cancelled results.
    */
   signal?: AbortSignal;
+  /**
+   * Tool-framework onUpdate callback. When set, partial snapshots emitted
+   * by the active step's backend are wrapped in the tool-framework
+   * `{ content, details }` shape (with the summary string reflecting the
+   * work-in-progress result list) and forwarded here. Intermediate steps'
+   * completed results are also re-forwarded so the UI keeps prior rows.
+   */
+  onUpdate?: (content: {
+    content: { type: "text"; text: string }[];
+    details: any;
+  }) => void;
 }
 
 export interface RunSerialOutput {
@@ -55,9 +66,23 @@ export async function runSerial(
     // discard all prior results, breaking the "prior + failing step" contract.
     const startedAt = Date.now();
     let result: OrchestrationResult;
+    // Wrap the per-step partial into the tool-framework update shape. Surfaces
+    // prior completed results + the in-flight step's latest snapshot so the UI
+    // can render a live-updating aggregate view.
+    const stepOnUpdate = opts.onUpdate
+      ? (partial: OrchestrationResult) => {
+          const inflight = [...results, partial];
+          opts.onUpdate!({
+            content: [
+              { type: "text", text: summarizeInflight("serial", inflight) },
+            ],
+            details: { results: inflight, isError: false, inflight: true },
+          });
+        }
+      : undefined;
     try {
       const handle = await deps.launch(task, true /* defaultFocus */, opts.signal);
-      result = await deps.waitForCompletion(handle, opts.signal);
+      result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate);
     } catch (err: any) {
       result = {
         name: task.name!,
@@ -77,4 +102,17 @@ export async function runSerial(
   }
 
   return { results, isError: false };
+}
+
+function summarizeInflight(
+  mode: "serial" | "parallel",
+  results: OrchestrationResult[],
+): string {
+  const lines = [`${mode} orchestration (in-flight): ${results.length} task(s)`];
+  for (const r of results) {
+    const first = (r.finalMessage ?? "").split("\n").find((l) => l.trim()) ?? "";
+    const trimmed = first.length > 200 ? first.slice(0, 200) + "…" : first;
+    lines.push(`- ${r.name}: exit=${r.exitCode} (${r.elapsedMs}ms) — ${trimmed}`);
+  }
+  return lines.join("\n");
 }

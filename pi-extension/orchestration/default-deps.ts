@@ -1,9 +1,8 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import {
-  launchSubagent,
-  watchSubagent,
-  type RunningSubagent,
-} from "../subagents/index.ts";
+import { makeHeadlessBackend } from "../subagents/backends/headless.ts";
+import { makePaneBackend } from "../subagents/backends/pane.ts";
+import { selectBackend } from "../subagents/backends/select.ts";
+import type { Backend, BackendLaunchParams } from "../subagents/backends/types.ts";
 import type {
   LauncherDeps,
   LaunchedHandle,
@@ -14,110 +13,70 @@ import type {
 /**
  * Build a LauncherDeps bound to the active session context.
  *
- * Completion path:
- *   launch = launchSubagent (widget registration + widget-refresh start
- *            + surface creation, all owned by the upstream primitive).
- *   waitForCompletion = watchSubagent (polling, widget updates, pane
- *            cleanup). The SubagentResult returned by watchSubagent now
- *            carries a uniform transcriptPath populated BEFORE cleanup
- *            in both the pi branch (sessionFile) and Claude branch
- *            (archived jsonl under ~/.pi/agent/sessions/claude-code/).
+ * Select a backend (pane or headless) once per makeDefaultDeps() call via
+ * selectBackend(), then adapt that backend's launch/watch surface to the
+ * orchestration layer's existing LauncherDeps contract.
  *
- * No readTranscript layer — the v3 upstream patch made that helper
- * redundant. The transcriptPath on SubagentResult is the single source
- * of truth.
+ * The pane backend preserves the current launchSubagent/watchSubagent path,
+ * including transcriptPath population and abort forwarding. The headless
+ * backend owns its own launch/watch behavior behind the same interface.
  *
- * Cancellation:
- *   When an orchestration tool's AbortSignal fires, `waitForCompletion`
- *   forwards it into the local `running.abortController` so
- *   `watchSubagent`'s `pollForExit` unblocks. `watchSubagent`'s catch
- *   branch then closes the pane and returns the synthetic "cancelled"
- *   SubagentResult (exitCode: 1, error: "cancelled"), which the run-
- *   serial/parallel cores turn into an aborted OrchestrationResult.
- *
- * Deferred (intentionally NOT plumbed here):
- *   - `caller_ping` surfacing — treated as a regular error for now;
- *     a future revision can add an explicit `ping` field on
- *     OrchestrationResult if the wrappers need to differentiate.
+ * OrchestrationTask -> BackendLaunchParams is a structural widening only:
+ * the orchestration tools require `agent`, while the backend interface keeps
+ * it optional to match the broader bare-subagent surface.
  */
 export function makeDefaultDeps(ctx: {
   sessionManager: ExtensionContext["sessionManager"];
   cwd: string;
 }): LauncherDeps {
-  const handleToRunning = new Map<string, RunningSubagent>();
+  const backend: Backend =
+    selectBackend() === "headless" ? makeHeadlessBackend(ctx) : makePaneBackend(ctx);
 
   return {
     async launch(
       task: OrchestrationTask,
       defaultFocus: boolean,
-      _signal?: AbortSignal,
+      signal?: AbortSignal,
     ): Promise<LaunchedHandle> {
-      const resolvedFocus = task.focus ?? defaultFocus;
-      const running = await launchSubagent(
-        {
-          name: task.name ?? "subagent",
-          task: task.task,
-          agent: task.agent,
-          model: task.model,
-          thinking: task.thinking,
-          systemPrompt: task.systemPrompt,
-          skills: task.skills,
-          tools: task.tools,
-          cwd: task.cwd,
-          fork: task.fork,
-          resumeSessionId: task.resumeSessionId,
-          cli: task.cli,
-          focus: resolvedFocus,
-        },
-        ctx,
-      );
-      handleToRunning.set(running.id, running);
-      return { id: running.id, name: running.name, startTime: running.startTime };
+      const params: BackendLaunchParams = task;
+      return backend.launch(params, defaultFocus, signal);
     },
+
     async waitForCompletion(
       handle: LaunchedHandle,
       signal?: AbortSignal,
+      onUpdate?: (partial: OrchestrationResult) => void,
     ): Promise<OrchestrationResult> {
-      const running = handleToRunning.get(handle.id);
-      if (!running) {
-        return {
-          name: handle.name,
-          finalMessage: "",
-          transcriptPath: null,
-          exitCode: 1,
-          elapsedMs: 0,
-          error: `no running entry for ${handle.id}`,
-        };
-      }
-      const abort = new AbortController();
-      running.abortController = abort;
-      // Mirror the tool-execution signal into the local abort so that
-      // session_shutdown (which aborts `running.abortController` directly)
-      // and caller cancellation share one abort path into watchSubagent.
-      let onToolAbort: (() => void) | null = null;
-      if (signal) {
-        if (signal.aborted) {
-          abort.abort();
-        } else {
-          onToolAbort = () => abort.abort();
-          signal.addEventListener("abort", onToolAbort, { once: true });
-        }
-      }
-      try {
-        const sub = await watchSubagent(running, abort.signal);
-        return {
-          name: handle.name,
-          finalMessage: sub.summary,
-          transcriptPath: sub.transcriptPath,
-          exitCode: sub.exitCode,
-          elapsedMs: sub.elapsed * 1000,
-          sessionId: sub.claudeSessionId,
-          error: sub.error,
-        };
-      } finally {
-        if (signal && onToolAbort) signal.removeEventListener("abort", onToolAbort);
-        handleToRunning.delete(handle.id);
-      }
+      const result = await backend.watch(
+        handle,
+        signal,
+        onUpdate
+          ? (partial) => {
+              onUpdate({
+                name: partial.name,
+                finalMessage: partial.finalMessage,
+                transcriptPath: partial.transcriptPath,
+                exitCode: partial.exitCode,
+                elapsedMs: partial.elapsedMs,
+                sessionId: partial.sessionId,
+                error: partial.error,
+                usage: partial.usage,
+                transcript: partial.transcript,
+              });
+            }
+          : undefined,
+      );
+      return {
+        name: result.name,
+        finalMessage: result.finalMessage,
+        transcriptPath: result.transcriptPath,
+        exitCode: result.exitCode,
+        elapsedMs: result.elapsedMs,
+        sessionId: result.sessionId,
+        error: result.error,
+        usage: result.usage,
+        transcript: result.transcript,
+      };
     },
   };
 }

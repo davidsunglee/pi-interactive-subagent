@@ -3,6 +3,7 @@ node_modules/
 
 .pi/*
 !.pi/plans/
+!.pi/reviews/
 !.pi/skills/
 !.pi/specs/
 !.pi/todos/

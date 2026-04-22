@@ -58,6 +58,49 @@ If your shell startup is slow and subagent commands sometimes get dropped before
 export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
 ```
 
+## Backends
+
+Subagents run under one of two backends, selected per session:
+
+- **pane** (default when a multiplexer is available) — spawns each subagent in a dedicated mux pane (cmux, tmux, zellij, or wezterm). The widget renders live elapsed time and message counts. Transcripts are archived after completion.
+- **headless** (default when no multiplexer is available) — spawns each subagent as a child process with piped stdio and parses stream-json. Works in CI, headless SSH sessions, and IDE-embedded terminals. Populates `usage` (tokens, cost, turns) and `transcript[]` (parsed stream of `TranscriptMessage` entries) on the orchestration result.
+
+Override selection via env var:
+
+```bash
+PI_SUBAGENT_MODE=pane      # force pane (errors if no mux)
+PI_SUBAGENT_MODE=headless  # force headless (works anywhere)
+PI_SUBAGENT_MODE=auto      # default — detect mux, fall back to headless
+```
+
+### Orchestration result shape
+
+`subagent_serial` and `subagent_parallel` return results with these fields per task:
+
+| Field            | Backend filling it     | Notes                                                                 |
+| ---------------- | ---------------------- | --------------------------------------------------------------------- |
+| `finalMessage`   | both                   | Last assistant text output.                                           |
+| `transcriptPath` | both                   | Path to the session/transcript file. For pi runs, this is `getDefaultSessionDirFor(effectiveCwd, effectiveAgentDir)` — typically `~/.pi/agent/sessions/<project-slug>/`, but project-local `.pi/agent/` and `PI_CODING_AGENT_DIR` override it. For Claude runs, this is always under `~/.pi/agent/sessions/claude-code/`. |
+| `exitCode`       | both                   | 0 on success, 1 on error / cancellation.                              |
+| `elapsedMs`      | both                   | Wall time from launch to completion.                                  |
+| `sessionId`      | both (Claude only)     | Claude session id — useful for `subagent_resume`.                     |
+| `error`          | both                   | Non-empty when the run didn't cleanly finish.                         |
+| `usage`          | **headless only (v1)** | `{ input, output, cacheRead, cacheWrite, cost, contextTokens, turns }` |
+| `transcript`     | **headless only (v1)** | Parsed array of `TranscriptMessage { role, content[] }`. Content block types: `"text" \| "thinking" \| "toolCall" \| "image"`. Rich provider metadata (stopReason, per-message timestamp/cost) is **not** surfaced here — read the archived `.jsonl` at `transcriptPath` for the full stream. |
+
+The `usage` / `transcript` fields are `undefined` on pane-backend results in v1; enriching the pane path is tracked as follow-up work.
+
+## Tool restriction
+
+Agents declaring `tools:` frontmatter have that restriction enforced in **both** backends for both CLIs (`pi` and `claude`). On the Claude path, the pi tool names are mapped to the equivalent Claude tools (`read → Read`, `bash → Bash`, `find`/`ls → Glob`, etc.) and emitted as `--tools` (the Claude CLI built-in tool availability flag — not `--allowedTools`, which is a permission rule that `bypassPermissions` / `--dangerously-skip-permissions` mode ignores). Agents without `tools:` frontmatter still run with full tool access on both CLIs.
+
+## Skills
+
+Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task) work as follows:
+
+- **pi backend (pane + headless):** each listed skill is expanded into a `/skill:<name>` positional message, which pi's CLI resolves and inlines at the start of the conversation. Full parity with upstream.
+- **Claude backend (pane + headless) — v1 limitation:** skills are currently **not** forwarded to the Claude CLI. Claude's skill mechanism is plugin/slash-command based, resolved by the CLI when the model invokes them mid-conversation; it does not consume pi's `/skill:<name>` message-prefix convention. Rather than leak literal `/skill:<name>` strings into the task body, **both** Claude backends emit an identical one-line `stderr` warning (`[pi-interactive-subagent] <name>: ignoring skills=<list> on Claude path — not supported in v1`) when skills are present and proceed without them. A follow-up spec will design Claude-specific skill delivery; until then, use the pi CLI for skill-dependent agents.
+
 ## What's Included
 
 ### Extensions

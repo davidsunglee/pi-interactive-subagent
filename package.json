@@ -17,7 +17,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/test.ts test/system-prompt-mode.test.ts test/orchestration/*.test.ts",
-    "test:integration": "node --test test/integration/*.test.ts"
+    "test:integration": "node --test test/integration/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
@@ -32,6 +33,7 @@
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "^0.65.0",
     "@mariozechner/pi-tui": "^0.65.0",
-    "@sinclair/typebox": "^0.34.49"
+    "@sinclair/typebox": "^0.34.49",
+    "typescript": "^5.9.3"
   }
 }
