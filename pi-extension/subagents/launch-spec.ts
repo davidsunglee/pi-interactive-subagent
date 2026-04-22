@@ -219,15 +219,30 @@ function parseAgentDefaultsFromContent(content: string): AgentDefaults | null {
 /**
  * Load agent defaults by name. Default search order matches the legacy
  * behavior: project-local `.pi/agents/`, then `$PI_CODING_AGENT_DIR/agents/`
- * (or `~/.pi/agent/agents/`), then bundled. If `searchDirs` is provided,
- * each directory is tried in order for `<dir>/<agentName>.md` and the bundled
- * / default paths are skipped — this is the escape hatch tests use to point
- * at deterministic agent fixtures.
+ * (or `~/.pi/agent/agents/`), then bundled. `projectRoot` overrides the root
+ * used for the project-local search (defaults to `process.cwd()`); pass the
+ * target child's cwd when launching into another repo so target-local agents
+ * win over parent-session agents. If `searchDirs` is provided, each directory
+ * is tried in order for `<dir>/<agentName>.md` and the bundled / default
+ * paths are skipped — this is the escape hatch tests use to point at
+ * deterministic agent fixtures.
+ *
+ * Accepts a legacy positional `searchDirs: string[]` or the new options-bag
+ * form `{ searchDirs?, projectRoot? }`.
  */
 export function loadAgentDefaults(
   agentName: string,
-  searchDirs?: string[],
+  searchDirsOrOptions?: string[] | { searchDirs?: string[]; projectRoot?: string },
 ): AgentDefaults | null {
+  let searchDirs: string[] | undefined;
+  let projectRoot: string | undefined;
+  if (Array.isArray(searchDirsOrOptions)) {
+    searchDirs = searchDirsOrOptions;
+  } else if (searchDirsOrOptions) {
+    searchDirs = searchDirsOrOptions.searchDirs;
+    projectRoot = searchDirsOrOptions.projectRoot;
+  }
+
   const paths: string[] = [];
   if (searchDirs && searchDirs.length > 0) {
     for (const d of searchDirs) {
@@ -235,8 +250,9 @@ export function loadAgentDefaults(
     }
   } else {
     const configDir = getAgentConfigDir();
+    const effectiveProjectRoot = projectRoot ?? process.cwd();
     paths.push(
-      join(process.cwd(), ".pi", "agents", `${agentName}.md`),
+      join(effectiveProjectRoot, ".pi", "agents", `${agentName}.md`),
       join(configDir, "agents", `${agentName}.md`),
       join(getBundledAgentsDir(), `${agentName}.md`),
     );
@@ -422,7 +438,22 @@ export function resolveLaunchSpec(
   opts?: { agentSearchDirs?: string[] },
 ): ResolvedLaunchSpec {
   const id = Math.random().toString(16).slice(2, 10);
-  const agentDefs = params.agent ? loadAgentDefaults(params.agent, opts?.agentSearchDirs) : null;
+  // Pre-resolve the target child cwd from params.cwd only (agent frontmatter
+  // `cwd` can't participate here — agent lookup precedes agentDefs). This
+  // ensures agent discovery follows the caller-specified target project's
+  // local `.pi/agents/` rather than the parent session's cwd when launching
+  // into another repo or worktree.
+  const preResolvedTargetCwd = params.cwd
+    ? params.cwd.startsWith("/")
+      ? params.cwd
+      : join(ctx.cwd, params.cwd)
+    : null;
+  const agentDefs = params.agent
+    ? loadAgentDefaults(params.agent, {
+        searchDirs: opts?.agentSearchDirs,
+        projectRoot: preResolvedTargetCwd ?? ctx.cwd,
+      })
+    : null;
 
   const effectiveModel = params.model ?? agentDefs?.model;
   const effectiveTools = params.tools ?? agentDefs?.tools;

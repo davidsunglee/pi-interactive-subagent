@@ -183,6 +183,49 @@ describe("orchestration-headless-no-mux (forced headless)", { skip: !PI_AVAILABL
     await assertNoAdditionalSteer(fake, "subagent_result", beforeShutdown + 1, 2_000);
   });
 
+  it("/reload aborts a long-running bare headless subagent via the module-surviving abort signal (review finding 2)", async () => {
+    // Run #1: extension registers, tool launches, subagent starts polling.
+    const { fake, result } = await runRegisteredTool(
+      "subagent",
+      { name: "reload-bare", agent: "test-long-running", task: "Stay alive until reload" },
+      dir,
+    );
+    assert.match(JSON.stringify(result.content), /launched/i,
+      "bare subagent must launch before reload is exercised");
+
+    const beforeReload = fake.sentMessages.filter(
+      (m) => m.message?.customType === "subagent_result",
+    ).length;
+
+    // Simulate /reload's module-top cleanup path directly: re-import does not
+    // run again in-process (a single ESM import is cached), but /reload's
+    // runtime semantics are "abort the previous globalThis[POLL_ABORT_KEY] and
+    // install a fresh one" — that is the exact signal the headless watcher was
+    // composed with, so exercising it here validates the reload-survival fix.
+    const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
+    const prev = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
+    assert.ok(prev, "module-load should have installed POLL_ABORT_KEY on globalThis");
+    prev.abort();
+    (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+
+    // The watcher for the bare subagent composed its abort signal with the
+    // (now-aborted) module signal, so it should propagate to a SIGTERM on the
+    // child and resolve the watch promise with an aborted/error result.
+    const steer = await waitForSteer(fake, "subagent_result", 20_000, {
+      afterCount: beforeReload,
+    });
+    assert.notEqual(
+      steer.message.details?.exitCode,
+      0,
+      `/reload should abort the tracked headless subagent, not let it complete: ${JSON.stringify(steer.message.details)}`,
+    );
+    assert.match(
+      JSON.stringify(steer.message),
+      /abort|error|fail/i,
+      `expected aborted/error result after /reload; got ${JSON.stringify(steer.message)}`,
+    );
+  });
+
   it("subagent_serial executes through the real registered tool callback under forced headless", async () => {
     const { result } = await runRegisteredTool(
       "subagent_serial",

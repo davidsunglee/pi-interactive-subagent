@@ -1004,6 +1004,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
           const id = randomUUID();
           const watcherAbort = new AbortController();
+          // Compose with the reload-surviving module signal so /reload aborts
+          // in-flight headless children along with session_shutdown. The
+          // runningSubagents map is module-local and does not survive reload,
+          // so without this linkage the old module's children become orphans
+          // the new module cannot track or cancel.
+          const effectiveWatchSignal = AbortSignal.any([
+            watcherAbort.signal,
+            getModuleAbortSignal(),
+          ]);
           const running: RunningSubagent = {
             id,
             name: handle.name,
@@ -1017,15 +1026,26 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           runningSubagents.set(id, running);
 
           backend
-            .watch(handle, watcherAbort.signal)
+            .watch(handle, effectiveWatchSignal)
             .then((result) => {
               const sessionRef = result.sessionId
                 ? `\n\nSession id: ${result.sessionId}`
                 : "";
-              const content =
-                result.exitCode !== 0
-                  ? `Sub-agent "${handle.name}" failed (exit code ${result.exitCode}).\n\n${result.finalMessage}${sessionRef}`
-                  : `Sub-agent "${handle.name}" completed (${formatElapsed(result.elapsedMs / 1000)}).\n\n${result.finalMessage}${sessionRef}`;
+              let content: string;
+              if (result.exitCode !== 0) {
+                // Prefer finalMessage when present, fall back to error, then
+                // append error as a suffix when both are populated so the
+                // underlying failure reason (missing CLI, backend error, etc.)
+                // reaches the model instead of a generic failure line.
+                const body = result.finalMessage || result.error || "";
+                const errorSuffix =
+                  result.finalMessage && result.error
+                    ? `\n\nError: ${result.error}`
+                    : "";
+                content = `Sub-agent "${handle.name}" failed (exit code ${result.exitCode}).\n\n${body}${errorSuffix}${sessionRef}`;
+              } else {
+                content = `Sub-agent "${handle.name}" completed (${formatElapsed(result.elapsedMs / 1000)}).\n\n${result.finalMessage}${sessionRef}`;
+              }
               pi.sendMessage(
                 {
                   customType: "subagent_result",
@@ -1037,6 +1057,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                     agent: params.agent,
                     exitCode: result.exitCode,
                     elapsed: result.elapsedMs / 1000,
+                    ...(result.error ? { error: result.error } : {}),
                     ...(result.sessionId ? { claudeSessionId: result.sessionId } : {}),
                   },
                 },
@@ -1044,7 +1065,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
               );
             })
             .catch((err) => {
-              const aborted = watcherAbort.signal.aborted;
+              const aborted = effectiveWatchSignal.aborted;
               const msg = err?.message ?? String(err);
               pi.sendMessage(
                 {

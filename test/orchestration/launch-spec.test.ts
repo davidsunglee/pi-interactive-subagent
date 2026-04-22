@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveLaunchSpec } from "../../pi-extension/subagents/launch-spec.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadAgentDefaults, resolveLaunchSpec } from "../../pi-extension/subagents/launch-spec.ts";
 
 const baseCtx = {
   sessionManager: {
@@ -132,5 +135,61 @@ describe("resolveLaunchSpec", () => {
     const spec = resolveLaunchSpec({ name: "X", task: "t" }, baseCtx);
     assert.match(spec.subagentSessionFile, /\.jsonl$/);
     assert.match(spec.subagentSessionFile, /sessions\/--tmp--\//);
+  });
+
+  it("resolves agent defaults from the target project's .pi/agents/ when params.cwd points into another repo (review finding 1)", () => {
+    const parentRoot = mkdtempSync(join(tmpdir(), "ls-parent-"));
+    const targetRoot = mkdtempSync(join(tmpdir(), "ls-target-"));
+    try {
+      // Seed two different agents with the same name at the two roots so we
+      // can prove which one won.
+      mkdirSync(join(parentRoot, ".pi", "agents"), { recursive: true });
+      mkdirSync(join(targetRoot, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(parentRoot, ".pi", "agents", "contested.md"),
+        "---\nmodel: parent-model\ntools: read\n---\nparent body\n",
+        "utf8",
+      );
+      writeFileSync(
+        join(targetRoot, ".pi", "agents", "contested.md"),
+        "---\nmodel: target-model\ntools: bash\n---\ntarget body\n",
+        "utf8",
+      );
+
+      const ctx = {
+        sessionManager: baseCtx.sessionManager,
+        cwd: parentRoot,
+      };
+      const spec = resolveLaunchSpec(
+        { name: "Z", task: "t", agent: "contested", cwd: targetRoot },
+        ctx,
+      );
+      assert.equal(
+        spec.effectiveModel,
+        "target-model",
+        "agent lookup must follow params.cwd target, not parent ctx.cwd",
+      );
+      assert.equal(spec.effectiveTools, "bash");
+    } finally {
+      rmSync(parentRoot, { recursive: true, force: true });
+      rmSync(targetRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("loadAgentDefaults({ projectRoot }) searches the specified root before global/bundled", () => {
+    const root = mkdtempSync(join(tmpdir(), "ls-agent-root-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "fixture-only.md"),
+        "---\nmodel: local-model\n---\nlocal body\n",
+        "utf8",
+      );
+      const defs = loadAgentDefaults("fixture-only", { projectRoot: root });
+      assert.ok(defs, "defs should be loaded from explicit projectRoot");
+      assert.equal(defs!.model, "local-model");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
