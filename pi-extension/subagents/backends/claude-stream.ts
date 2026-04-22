@@ -1,4 +1,51 @@
 import type { TranscriptContent, TranscriptMessage, UsageStats } from "./types.ts";
+import type { ResolvedLaunchSpec } from "../launch-spec.ts";
+import { PI_TO_CLAUDE_TOOLS } from "./tool-map.ts";
+
+const EFFORT_MAP: Record<string, string> = {
+  off: "low", minimal: "low", low: "low",
+  medium: "medium", high: "high", xhigh: "max",
+};
+
+export function buildClaudeHeadlessArgs(
+  spec: ResolvedLaunchSpec,
+  taskText: string,
+): string[] {
+  const args: string[] = [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-mode", "bypassPermissions",
+  ];
+  if (spec.claudeModelArg) {
+    args.push("--model", spec.claudeModelArg);
+  }
+  if (spec.effectiveThinking) {
+    const effort = EFFORT_MAP[spec.effectiveThinking.toLowerCase()];
+    if (effort) args.push("--effort", effort);
+  }
+  if (spec.identity) {
+    const flag = spec.systemPromptMode === "replace"
+      ? "--system-prompt"
+      : "--append-system-prompt";
+    args.push(flag, spec.identity);
+  }
+  if (spec.effectiveTools) {
+    const claudeTools = new Set<string>();
+    for (const t of spec.effectiveTools.split(",").map((s) => s.trim()).filter(Boolean)) {
+      const mapped = PI_TO_CLAUDE_TOOLS[t.toLowerCase()];
+      if (mapped) claudeTools.add(mapped);
+    }
+    if (claudeTools.size > 0) args.push("--tools", [...claudeTools].join(","));
+  }
+  if (spec.resumeSessionId) {
+    args.push("--resume", spec.resumeSessionId);
+  }
+  if (taskText !== "") {
+    args.push("--", taskText);
+  }
+  return args;
+}
 
 export interface ClaudeResult {
   exitCode: number;

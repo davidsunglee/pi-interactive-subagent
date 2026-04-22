@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { spawn as realSpawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { LineBuffer } from "./line-buffer.ts";
 import {
@@ -10,6 +11,8 @@ import {
   type ResolvedLaunchSpec,
 } from "../launch-spec.ts";
 import { seedSubagentSessionFile } from "../session.ts";
+import { buildClaudeHeadlessArgs, parseClaudeStreamEvent, parseClaudeResult } from "./claude-stream.ts";
+import { warnClaudeSkillsDropped } from "../index.ts";
 import type {
   Backend,
   BackendLaunchParams,
@@ -357,14 +360,157 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
 }
 
 async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
-  return {
-    name: p.spec.name,
-    finalMessage: "",
-    transcriptPath: null,
-    exitCode: 1,
-    elapsedMs: Date.now() - p.startTime,
-    error: "headless Claude backend not implemented yet (Phase 3)",
-  };
+  const { spec, startTime, abort, ctx } = p;
+  const transcript: TranscriptMessage[] = [];
+  let usage: UsageStats = emptyUsage();
+  let stderr = "";
+  let terminalResult: ReturnType<typeof parseClaudeResult> | null = null;
+  let sessionId: string | undefined;
+
+  warnClaudeSkillsDropped(spec.name, spec.effectiveSkills);
+
+  // Claude always uses direct task delivery — the Claude CLI prompt argument does
+  // not support @file substitution, so spec.taskDelivery is ignored on this path.
+  const taskText = spec.claudeTaskBody;
+
+  const args = buildClaudeHeadlessArgs(spec, taskText);
+
+  if (abort.aborted) return makeAbortedResult(spec, startTime, transcript, usage);
+
+  return new Promise<BackendResult>((resolve) => {
+    let proc: ChildProcess;
+    try {
+      proc = spawnImpl("claude", args, {
+        cwd: spec.effectiveCwd ?? ctx.cwd,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, ...spec.configRootEnv },
+      });
+    } catch (err: any) {
+      resolve({
+        name: spec.name, finalMessage: "", transcriptPath: null, exitCode: 1,
+        elapsedMs: Date.now() - startTime,
+        error: err?.message ?? String(err),
+      });
+      return;
+    }
+
+    const lb = new LineBuffer();
+    let wasAborted = false;
+    let exited = false;
+    proc.on("exit", () => { exited = true; });
+
+    const processLine = (line: string) => {
+      if (!line.trim()) return;
+      let event: any;
+      try { event = JSON.parse(line); } catch { return; }
+      if (event.type === "system" && event.subtype === "init"
+          && typeof event.session_id === "string") {
+        sessionId = event.session_id;
+      }
+      if (event.type === "result") {
+        terminalResult = parseClaudeResult(event);
+        usage = terminalResult.usage;
+      } else {
+        const msgs = parseClaudeStreamEvent(event);
+        if (msgs) for (const m of msgs) transcript.push(m);
+      }
+    };
+
+    proc.stdout!.on("data", (data: Buffer) => {
+      for (const line of lb.push(data.toString())) processLine(line);
+    });
+    proc.stderr!.on("data", (data: Buffer) => { stderr += data.toString(); });
+
+    const onAbort = () => {
+      wasAborted = true;
+      makeAbortHandler(proc, () => exited)();
+    };
+    if (abort.aborted) onAbort();
+    else abort.addEventListener("abort", onAbort, { once: true });
+
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      resolve({
+        name: spec.name, finalMessage: "", transcriptPath: null, exitCode: 1,
+        elapsedMs: Date.now() - startTime,
+        error: err.code === "ENOENT"
+          ? "claude CLI not found on PATH"
+          : err.message || String(err),
+      });
+    });
+
+    proc.on("close", async (code) => {
+      exited = true;
+      for (const line of lb.flush()) processLine(line);
+      const elapsedMs = Date.now() - startTime;
+      const exitCode = code ?? 0;
+      const finalMessage = terminalResult?.finalOutput ?? "";
+      const transcriptPath = sessionId
+        ? await archiveClaudeTranscript(sessionId)
+        : null;
+
+      if (wasAborted) {
+        resolve({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
+                  error: "aborted", sessionId, usage, transcript });
+        return;
+      }
+      if (exitCode !== 0 || terminalResult?.error) {
+        resolve({ name: spec.name, finalMessage, transcriptPath,
+                  exitCode: exitCode !== 0 ? exitCode : 1, elapsedMs,
+                  error: terminalResult?.error
+                    ?? (stderr.trim() || `claude exited with code ${exitCode}`),
+                  sessionId, usage, transcript });
+        return;
+      }
+      if (!terminalResult) {
+        resolve({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
+                  error: "child exited without completion event",
+                  sessionId, usage, transcript });
+        return;
+      }
+      resolve({ name: spec.name, finalMessage, transcriptPath, exitCode: 0, elapsedMs,
+                sessionId, usage, transcript });
+    });
+  });
+}
+
+async function archiveClaudeTranscript(sessionId: string): Promise<string | null> {
+  const sourceFile = await findClaudeSessionFile(sessionId, 2000);
+  if (!sourceFile) {
+    process.stderr.write(
+      `[pi-interactive-subagent] Claude session file ${sessionId}.jsonl not found ` +
+        `under ~/.claude/projects/*/ after 2s; transcriptPath will be null.\n`,
+    );
+    return null;
+  }
+  const destDir = join(homedir(), ".pi", "agent", "sessions", "claude-code");
+  mkdirSync(destDir, { recursive: true });
+  const dest = join(destDir, `${sessionId}.jsonl`);
+  copyFileSync(sourceFile, dest);
+  return dest;
+}
+
+export async function findClaudeSessionFile(
+  sessionId: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  const projectsRoot = join(homedir(), ".claude", "projects");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let dirs: string[] = [];
+    try {
+      dirs = readdirSync(projectsRoot, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+    } catch {
+    }
+    for (const slug of dirs) {
+      const candidate = join(projectsRoot, slug, `${sessionId}.jsonl`);
+      if (existsSync(candidate)) return candidate;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
 }
 
 function makeAbortedResult(
