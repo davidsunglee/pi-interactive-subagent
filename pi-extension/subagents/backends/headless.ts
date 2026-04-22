@@ -398,6 +398,13 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
     const lb = new LineBuffer();
     let wasAborted = false;
     let exited = false;
+    // review I3: guard against double-resolve if both `error` and `close` fire.
+    let settled = false;
+    const settle = (r: BackendResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
     proc.on("exit", () => { exited = true; });
 
     const processLine = (line: string) => {
@@ -430,7 +437,7 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
     else abort.addEventListener("abort", onAbort, { once: true });
 
     proc.on("error", (err: NodeJS.ErrnoException) => {
-      resolve({
+      settle({
         name: spec.name, finalMessage: "", transcriptPath: null, exitCode: 1,
         elapsedMs: Date.now() - startTime,
         error: err.code === "ENOENT"
@@ -440,22 +447,41 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
     });
 
     proc.on("close", async (code) => {
+      if (settled) return;
       exited = true;
       for (const line of lb.flush()) processLine(line);
       const elapsedMs = Date.now() - startTime;
       const exitCode = code ?? 0;
       const finalMessage = terminalResult?.finalOutput ?? "";
-      const transcriptPath = sessionId
-        ? await archiveClaudeTranscript(sessionId)
-        : null;
+      // review I1: warn if the stream ended without a system/init session_id
+      // on an otherwise-clean exit — likely means Claude's stream format changed.
+      if (!sessionId && exitCode === 0) {
+        process.stderr.write(
+          `[pi-interactive-subagent] ${spec.name}: no system/init event seen — ` +
+            `transcriptPath will be null (Claude stream format may have changed)\n`,
+        );
+      }
+      // review I2: archival may throw (EACCES, ENOSPC, race vs. session file
+      // deletion). Fall through to transcriptPath=null with a warning rather
+      // than letting the async close-handler reject unhandled.
+      let transcriptPath: string | null = null;
+      if (sessionId) {
+        try {
+          transcriptPath = await archiveClaudeTranscript(sessionId);
+        } catch (e: any) {
+          process.stderr.write(
+            `[pi-interactive-subagent] transcript archive failed: ${e?.message ?? e}\n`,
+          );
+        }
+      }
 
       if (wasAborted) {
-        resolve({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
+        settle({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
                   error: "aborted", sessionId, usage, transcript });
         return;
       }
       if (exitCode !== 0 || terminalResult?.error) {
-        resolve({ name: spec.name, finalMessage, transcriptPath,
+        settle({ name: spec.name, finalMessage, transcriptPath,
                   exitCode: exitCode !== 0 ? exitCode : 1, elapsedMs,
                   error: terminalResult?.error
                     ?? (stderr.trim() || `claude exited with code ${exitCode}`),
@@ -463,12 +489,12 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
         return;
       }
       if (!terminalResult) {
-        resolve({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
+        settle({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
                   error: "child exited without completion event",
                   sessionId, usage, transcript });
         return;
       }
-      resolve({ name: spec.name, finalMessage, transcriptPath, exitCode: 0, elapsedMs,
+      settle({ name: spec.name, finalMessage, transcriptPath, exitCode: 0, elapsedMs,
                 sessionId, usage, transcript });
     });
   });
