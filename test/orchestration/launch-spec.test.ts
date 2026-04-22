@@ -176,6 +176,39 @@ describe("resolveLaunchSpec", () => {
     }
   });
 
+  it("resolves relative params.cwd against ctx.cwd, not process.cwd() (review-v2 finding 1)", () => {
+    // Regression: resolveSubagentPaths used to resolve relative params.cwd
+    // against process.cwd(). If the session cwd differs from the Node process
+    // cwd, that split the launch-spec contract: agent lookup followed one tree
+    // while session placement/config-root followed another.
+    const sessionRoot = mkdtempSync(join(tmpdir(), "ls-session-"));
+    try {
+      const ctx = {
+        sessionManager: baseCtx.sessionManager,
+        cwd: sessionRoot,
+      };
+      const spec = resolveLaunchSpec(
+        { name: "R", task: "t", cwd: "sub/dir" },
+        ctx,
+      );
+      assert.equal(
+        spec.effectiveCwd,
+        join(sessionRoot, "sub", "dir"),
+        "relative params.cwd must resolve against ctx.cwd",
+      );
+      // And session placement must follow the same root — the session path
+      // is keyed on effectiveCwd, so if this passes, the derived session dir
+      // is under the ctx.cwd tree too.
+      const expectedSegment = `--${sessionRoot.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}-sub-dir--`;
+      assert.ok(
+        spec.subagentSessionFile.includes(expectedSegment),
+        `session file must be keyed on ctx.cwd-relative path, got ${spec.subagentSessionFile}`,
+      );
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+    }
+  });
+
   it("loadAgentDefaults({ projectRoot }) searches the specified root before global/bundled", () => {
     const root = mkdtempSync(join(tmpdir(), "ls-agent-root-"));
     try {

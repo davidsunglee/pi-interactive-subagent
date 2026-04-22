@@ -565,6 +565,22 @@ function safeScriptName(raw: string | undefined, fallback: string): string {
 }
 
 /**
+ * Build the `cd <dir> && ` prefix for a pane launch command.
+ *
+ * Pane and headless share the same default-cwd contract: when the caller does
+ * not specify a target cwd, the child must run in the session cwd (ctx.cwd),
+ * not in whatever directory the multiplexer happened to open the pane in —
+ * wezterm/zellij open splits in `process.cwd()`, which diverges from ctx.cwd
+ * whenever the agent is operating on another repo (review-v2 finding 2).
+ */
+export function buildPaneCdPrefix(
+  effectiveCwd: string | null,
+  sessionCwd: string,
+): string {
+  return `cd ${shellEscape(effectiveCwd ?? sessionCwd)} && `;
+}
+
+/**
  * Launch a subagent: creates the multiplexer pane, builds the command, and
  * sends it. Returns a RunningSubagent — does NOT poll.
  *
@@ -626,7 +642,7 @@ export async function launchSubagent(
       task: spec.claudeTaskBody,
     });
 
-    const cdPrefix = spec.effectiveCwd ? `cd ${shellEscape(spec.effectiveCwd)} && ` : "";
+    const cdPrefix = buildPaneCdPrefix(spec.effectiveCwd, ctx.cwd);
     const command = `${cdPrefix}${cmdParts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
 
     const launchScriptName = `${safeScriptName(params.name, "subagent")}-${id}.sh`;
@@ -749,7 +765,8 @@ export async function launchSubagent(
 
   // Resolve cwd — param overrides agent default, supports absolute and relative paths.
   // This was already computed above so session placement, PI_CODING_AGENT_DIR, and cd agree.
-  const cdPrefix = spec.effectiveCwd ? `cd ${shellEscape(spec.effectiveCwd)} && ` : "";
+  // Default to ctx.cwd (not process.cwd()) so pane + headless match (review-v2 finding 2).
+  const cdPrefix = buildPaneCdPrefix(spec.effectiveCwd, ctx.cwd);
 
   const piCommand = cdPrefix + envPrefix + parts.join(" ");
   const command = `${piCommand}; echo '__SUBAGENT_DONE_'$?'__'`;
@@ -793,17 +810,30 @@ const CLAUDE_SESSIONS_DIR = join(
   ".pi", "agent", "sessions", "claude-code",
 );
 
-function copyClaudeSession(sentinelFile: string): string | null {
+/**
+ * Archive the pane-Claude transcript and return the raw session id + archived
+ * path. The session id is the `.jsonl` filename stripped of its extension so
+ * it matches the raw id the headless Claude backend extracts from `system/init`
+ * — feeding either value into `--resume` via `resumeSessionId` must work
+ * identically (review-v2 finding 3).
+ *
+ * Export is intentional: exercised by the unit test that pins this contract.
+ */
+export function copyClaudeSession(
+  sentinelFile: string,
+  archiveDir: string = CLAUDE_SESSIONS_DIR,
+): { sessionId: string; archivedPath: string } | null {
   try {
     const transcriptFile = sentinelFile + ".transcript";
     if (!existsSync(transcriptFile)) return null;
     const transcriptPath = readFileSync(transcriptFile, "utf-8").trim();
     if (!transcriptPath || !existsSync(transcriptPath)) return null;
-    mkdirSync(CLAUDE_SESSIONS_DIR, { recursive: true });
+    mkdirSync(archiveDir, { recursive: true });
     const filename = transcriptPath.split("/").pop() ?? `claude-${Date.now()}.jsonl`;
-    const dest = join(CLAUDE_SESSIONS_DIR, filename);
-    copyFileSync(transcriptPath, dest);
-    return filename;
+    const archivedPath = join(archiveDir, filename);
+    copyFileSync(transcriptPath, archivedPath);
+    const sessionId = filename.endsWith(".jsonl") ? filename.slice(0, -".jsonl".length) : filename;
+    return { sessionId, archivedPath };
   } catch {
     return null;
   }
@@ -863,8 +893,11 @@ export async function watchSubagent(
       let sessionId: string | null = null;
       let transcriptPath: string | null = null;
       if (running.sentinelFile) {
-        sessionId = copyClaudeSession(running.sentinelFile);
-        transcriptPath = sessionId ? join(CLAUDE_SESSIONS_DIR, sessionId) : null;
+        const archived = copyClaudeSession(running.sentinelFile);
+        if (archived) {
+          sessionId = archived.sessionId;
+          transcriptPath = archived.archivedPath;
+        }
         try { unlinkSync(running.sentinelFile); } catch {}
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }

@@ -295,10 +295,16 @@ export function resolveDenyTools(agentDefs: AgentDefaults | null): Set<string> {
 export function resolveSubagentPaths(
   params: SubagentParamsType,
   agentDefs: AgentDefaults | null,
+  sessionCwd?: string,
 ): { effectiveCwd: string | null; localAgentDir: string | null; effectiveAgentDir: string } {
   const rawCwd = params.cwd ?? agentDefs?.cwd ?? null;
   const cwdIsFromAgent = !params.cwd && agentDefs?.cwd != null;
-  const cwdBase = cwdIsFromAgent ? getAgentConfigDir() : process.cwd();
+  // Relative caller-supplied cwd resolves against the session cwd, not the
+  // Node process cwd — otherwise a session running inside another directory
+  // would see agent defaults and session placement keyed on two different
+  // trees (review-v2 finding 1). Agent-frontmatter `cwd` stays anchored to
+  // the global agent config dir so agents remain portable across projects.
+  const cwdBase = cwdIsFromAgent ? getAgentConfigDir() : (sessionCwd ?? process.cwd());
   const effectiveCwd = rawCwd
     ? rawCwd.startsWith("/")
       ? rawCwd
@@ -469,6 +475,7 @@ export function resolveLaunchSpec(
   const { effectiveCwd, localAgentDir, effectiveAgentDir } = resolveSubagentPaths(
     params,
     agentDefs,
+    ctx.cwd,
   );
   const targetCwdForSession = effectiveCwd ?? ctx.cwd;
   const sessionDir = getDefaultSessionDirFor(targetCwdForSession, effectiveAgentDir);
