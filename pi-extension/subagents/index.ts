@@ -857,8 +857,35 @@ export function copyClaudeSession(
 export async function watchSubagent(
   running: RunningSubagent,
   signal: AbortSignal,
+  opts?: { onSessionKey?: (sessionKey: string) => void },
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running;
+
+  // ── onSessionKey delivery ──────────────────────────────────────────────────
+  // Pi children: sessionFile is known at launch — fire immediately.
+  // Claude children: session id is parsed from .transcript pointer file, which
+  // Claude writes early in its run. We attempt to resolve it on each poll tick
+  // and again synchronously before we return (race-closer).
+  let firedSessionKey = false;
+  const maybeFire = (key: string | undefined): void => {
+    if (!key || firedSessionKey) return;
+    firedSessionKey = true;
+    try { opts?.onSessionKey?.(key); } catch { /* defensive */ }
+  };
+  const readClaudeSessionId = (): string | undefined => {
+    if (running.cli !== "claude" || !running.sentinelFile) return undefined;
+    try {
+      const pointer = running.sentinelFile + ".transcript";
+      if (!existsSync(pointer)) return undefined;
+      const transcriptPath = readFileSync(pointer, "utf-8").trim();
+      if (!transcriptPath) return undefined;
+      const filename = transcriptPath.split("/").pop() ?? "";
+      return filename.endsWith(".jsonl") ? filename.slice(0, -".jsonl".length) : filename;
+    } catch { return undefined; }
+  };
+
+  // Pi children: fire immediately (session file known at launch time).
+  if (running.cli !== "claude") maybeFire(running.sessionFile);
 
   try {
     const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
@@ -875,6 +902,9 @@ export async function watchSubagent(
               running.bytes = stat.size;
             }
           } catch {}
+        } else {
+          // Claude: attempt early session key resolution on each tick.
+          maybeFire(readClaudeSessionId());
         }
       },
     });
@@ -882,6 +912,11 @@ export async function watchSubagent(
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
 
     if (running.cli === "claude") {
+      // LOAD-BEARING race-closer: fire onSessionKey synchronously before return
+      // so the blocked notification can populate sessionKey even if the tick
+      // missed it.
+      maybeFire(readClaudeSessionId());
+
       // Claude Code result extraction
       let summary = "";
 

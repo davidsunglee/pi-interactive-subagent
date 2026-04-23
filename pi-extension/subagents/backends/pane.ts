@@ -8,6 +8,7 @@ import type {
   Backend,
   BackendLaunchParams,
   BackendResult,
+  BackendWatchHooks,
   LaunchedHandle,
 } from "./types.ts";
 
@@ -43,12 +44,14 @@ export function makePaneBackend(ctx: {
         ctx,
       );
       handleToRunning.set(running.id, running);
-      return { id: running.id, name: running.name, startTime: running.startTime };
+      return { id: running.id, name: running.name, startTime: running.startTime, sessionKey: running.sessionFile };
     },
 
     async watch(
       handle: LaunchedHandle,
       signal?: AbortSignal,
+      onUpdate?: (partial: BackendResult) => void,
+      hooks?: BackendWatchHooks,
     ): Promise<BackendResult> {
       const running = handleToRunning.get(handle.id);
       if (!running) {
@@ -60,6 +63,10 @@ export function makePaneBackend(ctx: {
           elapsedMs: 0,
           error: `no running entry for ${handle.id}`,
         };
+      }
+      // Pi children: fire onSessionKey immediately (sessionFile is known at launch).
+      if (running.cli !== "claude" && running.sessionFile) {
+        try { hooks?.onSessionKey?.(running.sessionFile); } catch { /* defensive */ }
       }
       const abort = new AbortController();
       running.abortController = abort;
@@ -73,7 +80,9 @@ export function makePaneBackend(ctx: {
         }
       }
       try {
-        const sub = await watchSubagent(running, abort.signal);
+        const sub = await watchSubagent(running, abort.signal, {
+          onSessionKey: (key) => hooks?.onSessionKey?.(key),
+        });
         return {
           name: handle.name,
           finalMessage: sub.summary,
@@ -81,7 +90,9 @@ export function makePaneBackend(ctx: {
           exitCode: sub.exitCode,
           elapsedMs: sub.elapsed * 1000,
           sessionId: sub.claudeSessionId,
+          sessionKey: running.sessionFile ?? sub.claudeSessionId,
           error: sub.error,
+          ping: sub.ping,
         };
       } finally {
         if (signal && onToolAbort) signal.removeEventListener("abort", onToolAbort);

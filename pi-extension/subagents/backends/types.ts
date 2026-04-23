@@ -37,6 +37,12 @@ export interface BackendResult {
   error?: string;
   usage?: UsageStats;
   transcript?: TranscriptMessage[];
+  sessionKey?: string;
+  ping?: { name: string; message: string };
+}
+
+export interface BackendWatchHooks {
+  onSessionKey?: (sessionKey: string) => void;
 }
 
 export interface BackendLaunchParams {
@@ -73,5 +79,6 @@ export interface Backend {
     handle: LaunchedHandle,
     signal?: AbortSignal,
     onUpdate?: (partial: BackendResult) => void,
+    hooks?: BackendWatchHooks,
   ): Promise<BackendResult>;
 }

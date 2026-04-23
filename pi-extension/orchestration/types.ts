@@ -92,6 +92,15 @@ export interface AsyncDispatchEnvelope {
 }
 
 /**
+ * Hooks for mid-run session key delivery. Passed as the 4th positional arg to
+ * `waitForCompletion` so callers can be notified as soon as a child's
+ * resume-addressable key is known (before the child exits).
+ */
+export interface WaitForCompletionHooks {
+  onSessionKey?: (sessionKey: string) => void;
+}
+
+/**
  * Dependencies that orchestration cores need injected, so tests can
  * mock all IO (pane spawning, sentinel waits, transcript reads).
  *
@@ -112,6 +121,7 @@ export interface LauncherDeps {
     handle: LaunchedHandle,
     signal?: AbortSignal,
     onUpdate?: (partial: OrchestrationResult) => void,
+    hooks?: WaitForCompletionHooks,
   ): Promise<OrchestrationResult>;
 }
 

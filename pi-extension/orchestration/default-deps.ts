@@ -8,6 +8,7 @@ import type {
   LaunchedHandle,
   OrchestrationResult,
   OrchestrationTask,
+  WaitForCompletionHooks,
 } from "./types.ts";
 
 /**
@@ -46,6 +47,7 @@ export function makeDefaultDeps(ctx: {
       handle: LaunchedHandle,
       signal?: AbortSignal,
       onUpdate?: (partial: OrchestrationResult) => void,
+      hooks?: WaitForCompletionHooks,
     ): Promise<OrchestrationResult> {
       const result = await backend.watch(
         handle,
@@ -62,9 +64,12 @@ export function makeDefaultDeps(ctx: {
                 error: partial.error,
                 usage: partial.usage,
                 transcript: partial.transcript,
+                sessionKey: partial.sessionKey,
+                ping: partial.ping,
               });
             }
           : undefined,
+        hooks,
       );
       return {
         name: result.name,
@@ -76,6 +81,8 @@ export function makeDefaultDeps(ctx: {
         error: result.error,
         usage: result.usage,
         transcript: result.transcript,
+        sessionKey: result.sessionKey,
+        ping: result.ping,
       };
     },
   };

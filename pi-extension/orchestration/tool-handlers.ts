@@ -83,6 +83,7 @@ export function registerOrchestrationTools(
                 signal,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
+                onSessionKey: (taskIndex, sessionKey) => registry.updateSessionKey(orchestrationId, taskIndex, sessionKey),
                 // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
               }, deps);
               // Post-run cleanup: any slot still pending/running is swept to cancelled
@@ -204,6 +205,7 @@ export function registerOrchestrationTools(
                 signal,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
+                onSessionKey: (taskIndex, sessionKey) => registry.updateSessionKey(orchestrationId, taskIndex, sessionKey),
                 maxConcurrency: params.maxConcurrency,
                 // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
               }, deps);

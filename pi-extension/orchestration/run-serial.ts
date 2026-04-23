@@ -31,6 +31,14 @@ export interface RunSerialOpts {
   onLaunched?: (taskIndex: number, info: { sessionKey?: string }) => void;
   /** Registry hook: called once per task as soon as its terminal state is known. */
   onTerminal?: (taskIndex: number, result: OrchestratedTaskResult) => void;
+  /**
+   * Registry hook: called mid-run as soon as the child's resume-addressable
+   * session key is known. For pi children this fires immediately after launch;
+   * for Claude children it fires once the Claude process writes its session
+   * pointer file. Must be called BEFORE any blocked notification so the
+   * registry ownership map is populated before the parent can resume.
+   */
+  onSessionKey?: (taskIndex: number, sessionKey: string) => void;
 }
 
 export interface RunSerialOutput {
@@ -104,7 +112,9 @@ export async function runSerial(
     try {
       const handle = await deps.launch(task, true /* defaultFocus */, opts.signal);
       opts.onLaunched?.(i, { sessionKey: handle.sessionKey });
-      result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate);
+      result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate, {
+        onSessionKey: (sessionKey) => opts.onSessionKey?.(i, sessionKey),
+      });
     } catch (err: any) {
       result = {
         name: task.name!,

@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { spawn as realSpawn, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { LineBuffer } from "./line-buffer.ts";
@@ -17,6 +17,7 @@ import type {
   Backend,
   BackendLaunchParams,
   BackendResult,
+  BackendWatchHooks,
   LaunchedHandle,
   TranscriptContent,
   TranscriptMessage,
@@ -210,13 +211,21 @@ export function makeHeadlessBackend(ctx: {
           : runPiHeadless({ spec, startTime, abort: abort.signal, ctx, emitPartial: emit });
 
       launches.set(id, entry);
-      return { id, name: spec.name, startTime };
+      return {
+        id,
+        name: spec.name,
+        startTime,
+        // Pi children: session file is known at launch.
+        // Claude children: session key is late-bound via onSessionKey hook.
+        ...(spec.effectiveCli !== "claude" ? { sessionKey: spec.subagentSessionFile } : {}),
+      };
     },
 
     async watch(
       handle: LaunchedHandle,
       signal?: AbortSignal,
       onUpdate?: (partial: BackendResult) => void,
+      hooks?: BackendWatchHooks,
     ): Promise<BackendResult> {
       const entry = launches.get(handle.id);
       if (!entry) {
@@ -228,6 +237,11 @@ export function makeHeadlessBackend(ctx: {
           elapsedMs: 0,
           error: `no launch entry for ${handle.id}`,
         };
+      }
+      // Pi children: fire onSessionKey immediately (session file known at launch).
+      // The sessionKey was stored on the LaunchedHandle so we can retrieve it here.
+      if (handle.sessionKey) {
+        try { hooks?.onSessionKey?.(handle.sessionKey); } catch { /* defensive */ }
       }
       try {
         if (signal) {
@@ -462,27 +476,51 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
       const archived = existsSync(spec.subagentSessionFile) ? spec.subagentSessionFile : null;
       const exitCode = code ?? 0;
       const final = getFinalOutput(transcript);
+      const sessionKey = spec.subagentSessionFile;
+
+      // Check for .exit sidecar file written by subagent_done / caller_ping.
+      // This sidecar may be present if the pi child exited via the headless path
+      // (e.g. in tests or when running without a pane). The pane path uses
+      // pollForExit which already consumes the sidecar; the headless path does
+      // not, so we check here.
+      let ping: { name: string; message: string } | undefined;
+      try {
+        const exitFile = `${spec.subagentSessionFile}.exit`;
+        if (existsSync(exitFile)) {
+          const data = JSON.parse(readFileSync(exitFile, "utf8"));
+          rmSync(exitFile, { force: true });
+          if (data.type === "ping") {
+            ping = { name: data.name, message: data.message };
+          }
+        }
+      } catch { /* ignore malformed sidecar */ }
 
       if (wasAborted) {
         resolve({ name: spec.name, finalMessage: final, transcriptPath: archived,
-                  exitCode: 1, elapsedMs, error: "aborted", usage, transcript });
+                  exitCode: 1, elapsedMs, error: "aborted", sessionKey, usage, transcript });
         return;
       }
       if (exitCode !== 0) {
         resolve({ name: spec.name, finalMessage: final, transcriptPath: archived,
                   exitCode, elapsedMs,
                   error: stderr.trim() || `pi exited with code ${exitCode}`,
-                  usage, transcript });
+                  sessionKey, usage, transcript });
+        return;
+      }
+      if (ping) {
+        // Ping: subagent is blocked and requesting help. Resolve with ping info.
+        resolve({ name: spec.name, finalMessage: final, transcriptPath: archived,
+                  exitCode: 0, elapsedMs, sessionKey, ping, usage, transcript });
         return;
       }
       if (!terminalEvent) {
         resolve({ name: spec.name, finalMessage: final, transcriptPath: archived,
                   exitCode: 1, elapsedMs,
-                  error: "child exited without completion event", usage, transcript });
+                  error: "child exited without completion event", sessionKey, usage, transcript });
         return;
       }
       resolve({ name: spec.name, finalMessage: final, transcriptPath: archived,
-                exitCode: 0, elapsedMs, usage, transcript });
+                exitCode: 0, elapsedMs, sessionKey, usage, transcript });
     });
   });
 }
@@ -639,7 +677,7 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
 
       if (wasAborted) {
         settle({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
-                  error: "aborted", sessionId, usage, transcript });
+                  error: "aborted", sessionId, sessionKey: sessionId, usage, transcript });
         return;
       }
       if (exitCode !== 0 || terminalResult?.error) {
@@ -647,17 +685,17 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
                   exitCode: exitCode !== 0 ? exitCode : 1, elapsedMs,
                   error: terminalResult?.error
                     ?? (stderr.trim() || `claude exited with code ${exitCode}`),
-                  sessionId, usage, transcript });
+                  sessionId, sessionKey: sessionId, usage, transcript });
         return;
       }
       if (!terminalResult) {
         settle({ name: spec.name, finalMessage, transcriptPath, exitCode: 1, elapsedMs,
                   error: "child exited without completion event",
-                  sessionId, usage, transcript });
+                  sessionId, sessionKey: sessionId, usage, transcript });
         return;
       }
       settle({ name: spec.name, finalMessage, transcriptPath, exitCode: 0, elapsedMs,
-                sessionId, usage, transcript });
+                sessionId, sessionKey: sessionId, usage, transcript });
     });
   });
 }
@@ -714,6 +752,8 @@ function makeAbortedResult(
     exitCode: 1,
     elapsedMs: Date.now() - startTime,
     error: "aborted",
+    // Include sessionKey for pi children so the caller can still route to the registry.
+    ...(spec.effectiveCli !== "claude" ? { sessionKey: spec.subagentSessionFile } : {}),
     usage,
     transcript,
   };
