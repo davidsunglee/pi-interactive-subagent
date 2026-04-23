@@ -75,11 +75,12 @@ export function registerOrchestrationTools(
             config: { mode: "serial", tasks: params.tasks },
           });
           const deps = depsFactory(ctx);
+          const signal = registry.getAbortSignal(orchestrationId)!;
           // Fire-and-forget: background execution with registry bookkeeping.
           (async () => {
             try {
               await runSerial(params.tasks, {
-                // No signal: async runs are cancelled via subagent_run_cancel, not AbortSignal.
+                signal,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
                 // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
@@ -195,10 +196,12 @@ export function registerOrchestrationTools(
             config: { mode: "parallel", tasks: params.tasks, maxConcurrency: params.maxConcurrency },
           });
           const deps = depsFactory(ctx);
+          const signal = registry.getAbortSignal(orchestrationId)!;
           // Fire-and-forget: background execution with registry bookkeeping.
           (async () => {
             try {
               await runParallel(params.tasks, {
+                signal,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
                 maxConcurrency: params.maxConcurrency,

@@ -337,4 +337,23 @@ describe("createRegistry", () => {
     assert.equal(emitted.length, 1, "no second event emitted");
     assert.equal(reg.getSnapshot(id)!.tasks[0].state, "cancelled", "slot remains cancelled");
   });
+
+  it("cancel aborts the orchestration's shared AbortSignal", () => {
+    const { emitter } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    const signal = reg.getAbortSignal(id);
+    assert.ok(signal);
+    assert.equal(signal!.aborted, false);
+    reg.cancel(id);
+    assert.equal(signal!.aborted, true);
+  });
+
+  it("getAbortSignal returns null for unknown id", () => {
+    const { emitter } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    assert.equal(reg.getAbortSignal("deadbeef"), null);
+  });
 });

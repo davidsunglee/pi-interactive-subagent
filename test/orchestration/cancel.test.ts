@@ -112,3 +112,47 @@ describe("subagent_run_cancel", () => {
     assert.equal(res.details.alreadyTerminal, true);
   });
 });
+
+describe("subagent_run_cancel abort plumbing", () => {
+  it("cancel aborts the in-flight deps.waitForCompletion signal so the background runner stops launching further steps", async () => {
+    const abortsSeen: boolean[] = [];
+    const launchedTaskNames: string[] = [];
+    const deps: LauncherDeps = {
+      async launch(task) {
+        launchedTaskNames.push(task.task);
+        return { id: task.task, name: task.name ?? "s", startTime: Date.now() };
+      },
+      async waitForCompletion(h, signal) {
+        return await new Promise((resolve) => {
+          if (signal?.aborted) {
+            abortsSeen.push(true);
+            return resolve({ name: h.name, finalMessage: "", transcriptPath: null,
+                             exitCode: 1, elapsedMs: 0, error: "cancelled" });
+          }
+          signal?.addEventListener("abort", () => {
+            abortsSeen.push(true);
+            resolve({ name: h.name, finalMessage: "", transcriptPath: null,
+                      exitCode: 1, elapsedMs: 0, error: "cancelled" });
+          }, { once: true });
+        });
+      },
+    };
+    const emitted: any[] = [];
+    const registry = createRegistry((p) => emitted.push(p));
+    const { api, tools } = makeApi();
+    registerOrchestrationTools(api, () => deps, () => true, () => null, () => null, { registry });
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
+    const cancelTool = tools.find((t) => t.name === "subagent_run_cancel");
+    const envelope = await serial.execute(
+      "abort-plumbing",
+      { wait: false, tasks: [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }] },
+      new AbortController().signal, () => {}, { sessionManager: {} as any, cwd: "/tmp" },
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    await cancelTool.execute("c", { orchestrationId: envelope.details.orchestrationId },
+      new AbortController().signal, () => {}, { sessionManager: {} as any, cwd: "/tmp" });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(abortsSeen.length >= 1, "waitForCompletion should have seen an abort");
+    assert.equal(launchedTaskNames.length, 1, "second task should not have launched after cancel");
+  });
+});

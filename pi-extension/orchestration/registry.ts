@@ -77,6 +77,7 @@ interface OrchestrationEntry {
   tasks: OrchestratedTaskResult[];
   overallState: "running" | "completed";
   sessionKeys: Map<number, string>; // taskIndex -> sessionKey (when known)
+  abort: AbortController;
 }
 
 export interface Registry {
@@ -92,6 +93,7 @@ export interface Registry {
   onResumeStarted(sessionKey: string): void;
   onResumeTerminal(sessionKey: string, result: OrchestratedTaskResult): void;
   cancel(orchestrationId: string): { ok: true; alreadyTerminal?: boolean };
+  getAbortSignal(orchestrationId: string): AbortSignal | null;
   getSnapshot(orchestrationId: string): { tasks: OrchestratedTaskResult[] } | null;
   lookupOwner(sessionKey: string): { orchestrationId: string; taskIndex: number } | null;
   listActive(): string[];
@@ -157,6 +159,7 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
         tasks,
         overallState: "running",
         sessionKeys: new Map(),
+        abort: new AbortController(),
       });
       return id;
     },
@@ -259,11 +262,17 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
       registry.onTaskTerminal(own.orchestrationId, own.taskIndex, result);
     },
 
+    getAbortSignal(orchestrationId) {
+      const entry = entries.get(orchestrationId);
+      return entry ? entry.abort.signal : null;
+    },
+
     cancel(orchestrationId) {
       const entry = entries.get(orchestrationId);
       if (!entry || entry.overallState !== "running") {
         return { ok: true, alreadyTerminal: true };
       }
+      entry.abort.abort();
       const cancelledIndices: number[] = [];
       for (let i = 0; i < entry.tasks.length; i++) {
         const t = entry.tasks[i];
