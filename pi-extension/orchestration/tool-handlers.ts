@@ -79,13 +79,23 @@ export function registerOrchestrationTools(
           // Fire-and-forget: background execution with registry bookkeeping.
           (async () => {
             try {
-              await runSerial(params.tasks, {
+              const out = await runSerial(params.tasks, {
                 signal,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
                 onSessionKey: (taskIndex, sessionKey) => registry.updateSessionKey(orchestrationId, taskIndex, sessionKey),
-                // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
+                onBlocked: (taskIndex, p) => registry.onTaskBlocked(orchestrationId, taskIndex, {
+                  sessionKey: p.sessionKey, message: p.message, partial: p.partial,
+                }),
               }, deps);
+
+              if (out.blocked) {
+                // Paused on a blocked step. Task 11's continuation will re-enter
+                // on resume. Do NOT run the post-run sweep — downstream steps
+                // must stay pending so they remain launchable after resume.
+                return;
+              }
+
               // Post-run cleanup: any slot still pending/running is swept to cancelled
               // (belt & suspenders — runSerial should have reported each step before
               // returning, but if it bailed early for any reason we ensure the
@@ -206,10 +216,14 @@ export function registerOrchestrationTools(
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
                 onSessionKey: (taskIndex, sessionKey) => registry.updateSessionKey(orchestrationId, taskIndex, sessionKey),
+                onBlocked: (taskIndex, p) => registry.onTaskBlocked(orchestrationId, taskIndex, {
+                  sessionKey: p.sessionKey, message: p.message, partial: p.partial,
+                }),
                 maxConcurrency: params.maxConcurrency,
-                // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
               }, deps);
               // Post-run cleanup: any slot still pending/running is swept to cancelled.
+              // Blocked slots are already in registry-owned state and are NOT
+              // pending/running, so the sweep naturally skips them.
               const snap = registry.getSnapshot(orchestrationId);
               if (snap) {
                 for (const t of snap.tasks) {

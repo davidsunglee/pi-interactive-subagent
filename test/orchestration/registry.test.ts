@@ -357,3 +357,60 @@ describe("createRegistry", () => {
     assert.equal(reg.getAbortSignal("deadbeef"), null);
   });
 });
+
+describe("createRegistry onTaskBlocked / onResumeTerminal", () => {
+  it("emits a blocked event and holds the orchestration open", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "need input" });
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].kind, "blocked");
+    assert.equal(emitted[0].taskIndex, 0);
+    assert.equal(emitted[0].taskName, "a");
+    assert.equal(emitted[0].sessionKey, "sess-a");
+    assert.equal(emitted[0].message, "need input");
+    assert.equal(reg.getSnapshot(id)!.tasks[0].state, "blocked");
+  });
+
+  it("onResumeTerminal re-routes via ownership map and closes the orchestration", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "need input" });
+    assert.equal(emitted.length, 1);
+    reg.onResumeTerminal("sess-a", {
+      name: "a", index: 0, state: "completed", finalMessage: "resolved", exitCode: 0, elapsedMs: 5,
+    });
+    assert.equal(emitted.length, 2);
+    assert.equal(emitted[1].kind, "orchestration_complete");
+    assert.equal(emitted[1].isError, false);
+  });
+
+  it("cancel of a blocked task transitions it to cancelled without a resume", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "parallel", tasks: [
+        { name: "a", agent: "x", task: "t" },
+        { name: "b", agent: "x", task: "t" },
+      ] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskLaunched(id, 1, { sessionKey: "sess-b" });
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "?" });
+    reg.onTaskTerminal(id, 1, { name: "b", index: 1, state: "completed", exitCode: 0, elapsedMs: 1 });
+    assert.equal(emitted.filter((e) => e.kind === "orchestration_complete").length, 0);
+    reg.cancel(id);
+    const complete = emitted.find((e) => e.kind === "orchestration_complete");
+    assert.ok(complete);
+    assert.equal(complete.results[0].state, "cancelled");
+    assert.equal(complete.results[1].state, "completed");
+  });
+});

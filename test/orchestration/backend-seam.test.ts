@@ -27,7 +27,7 @@ function makeHarness(deps: LauncherDeps) {
 // Flip it.skip → it() in Task 10 to enable them.
 
 describe("backend-seam: mid-run onSessionKey routes into registry.updateSessionKey", () => {
-  it.skip("a Claude-backed fake that fires onSessionKey mid-run populates ownership before any blocked event", async () => {
+  it("a Claude-backed fake that fires onSessionKey mid-run populates ownership before any blocked event", async () => {
     const claudeId = "claude-sess-late-bound";
     const deps: LauncherDeps = {
       async launch(t) {
@@ -55,7 +55,7 @@ describe("backend-seam: mid-run onSessionKey routes into registry.updateSessionK
     assert.equal(registry.lookupOwner(claudeId)!.orchestrationId, env.details.orchestrationId);
   });
 
-  it.skip("race-closer: onSessionKey fired SYNCHRONOUSLY right before a ping-carrying result still lands in the registry before onTaskBlocked runs", async () => {
+  it("race-closer: onSessionKey fired SYNCHRONOUSLY right before a ping-carrying result still lands in the registry before onTaskBlocked runs", async () => {
     const claudeId = "claude-sess-atomic";
     const deps: LauncherDeps = {
       async launch(t) { return { id: t.task, name: t.name ?? "s", startTime: Date.now() }; },

@@ -39,11 +39,20 @@ export interface RunSerialOpts {
    * registry ownership map is populated before the parent can resume.
    */
   onSessionKey?: (taskIndex: number, sessionKey: string) => void;
+  /**
+   * Async-mode hook: when set, a ping-carrying step is routed here instead of
+   * terminalized. runSerial returns early with blocked:true. Downstream steps
+   * remain untouched (pending) — the dispatcher must NOT run the cancellation
+   * sweep when blocked:true is returned.
+   */
+  onBlocked?: (taskIndex: number, payload: { sessionKey: string; message: string; partial: OrchestratedTaskResult }) => void;
 }
 
 export interface RunSerialOutput {
   results: OrchestrationResult[];
   isError: boolean;
+  /** True when runSerial returned early because a step blocked; downstream steps remain untouched. */
+  blocked?: boolean;
 }
 
 export async function runSerial(
@@ -125,6 +134,39 @@ export async function runSerial(
         error: err?.message ?? String(err),
       };
     }
+    if (result.ping) {
+      if (opts.onBlocked && result.sessionKey) {
+        // Async path: transition to blocked and stop. Downstream steps stay
+        // pending — the dispatcher must NOT run the cancellation sweep.
+        opts.onBlocked(i, {
+          sessionKey: result.sessionKey,
+          message: result.ping.message,
+          partial: {
+            name: result.name,
+            index: i,
+            state: "blocked",
+            finalMessage: result.finalMessage,
+            transcriptPath: result.transcriptPath ?? null,
+            elapsedMs: result.elapsedMs,
+            exitCode: result.exitCode,
+            sessionKey: result.sessionKey,
+            usage: result.usage,
+            transcript: result.transcript,
+          },
+        });
+        return { results, isError: false, blocked: true };
+      }
+      // Sync path: preserve today's behavior — fold ping.message into
+      // finalMessage and record as completed. The terminal-annotation below
+      // sees state "completed" and pushes.
+      result = {
+        ...result,
+        finalMessage: result.ping.message,
+        state: "completed",
+      };
+      // Fall through to terminal-annotation.
+    }
+
     result.index = i;
     result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
     results.push(result);

@@ -45,6 +45,13 @@ export interface RunParallelOpts {
    * registry ownership map is populated before the parent can resume.
    */
   onSessionKey?: (taskIndex: number, sessionKey: string) => void;
+  /**
+   * Async-mode hook: when set, a ping-carrying step is routed here instead of
+   * terminalized. The worker returns without filling results[i] — the registry
+   * owns that slot. In async mode, undefined results slots are left alone
+   * (the post-loop sweep skips them when onBlocked is set).
+   */
+  onBlocked?: (taskIndex: number, payload: { sessionKey: string; message: string; partial: OrchestratedTaskResult }) => void;
 }
 
 export interface RunParallelOutput {
@@ -115,6 +122,32 @@ export async function runParallel(
           error: err?.message ?? String(err),
         };
       }
+      if (result.ping) {
+        if (opts.onBlocked && result.sessionKey) {
+          opts.onBlocked(i, {
+            sessionKey: result.sessionKey,
+            message: result.ping.message,
+            partial: {
+              name: result.name,
+              index: i,
+              state: "blocked",
+              finalMessage: result.finalMessage,
+              transcriptPath: result.transcriptPath ?? null,
+              elapsedMs: result.elapsedMs,
+              exitCode: result.exitCode,
+              sessionKey: result.sessionKey,
+              usage: result.usage,
+              transcript: result.transcript,
+            },
+          });
+          // Leave results[i] undefined — registry owns this slot. Worker exits normally.
+          return;
+        }
+        // Sync path: fold ping.message into finalMessage and mark as completed.
+        result = { ...result, finalMessage: result.ping.message, state: "completed" };
+        // Fall through to results[i] = result.
+      }
+
       result.index = i;
       result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
       results[i] = result;
@@ -143,6 +176,9 @@ export async function runParallel(
   if (opts.signal?.aborted) {
     for (let i = 0; i < tasks.length; i++) {
       if (!results[i]) {
+        // In async mode (onBlocked set), undefined slots are registry-owned
+        // blocked slots. Leave them alone — the registry handles their cleanup.
+        if (opts.onBlocked) continue;
         const raw = tasks[i];
         const cancelledResult: OrchestrationResult = {
           name: raw.name ?? `task-${i + 1}`,
