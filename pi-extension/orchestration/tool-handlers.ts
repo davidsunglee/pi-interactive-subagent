@@ -16,6 +16,10 @@ const ParallelParams = Type.Object({
   wait: Type.Optional(Type.Boolean({ description: "Default true. Set false to dispatch asynchronously; tool returns immediately with { orchestrationId, tasks } and delivers aggregated results via steer-back." })),
 });
 
+const CancelParams = Type.Object({
+  orchestrationId: Type.String({ description: "Orchestration id returned from a prior wait:false dispatch." }),
+});
+
 type ErrorResult = {
   content: Array<{ type: "text"; text: string }>;
   details: { error: string };
@@ -280,6 +284,32 @@ export function registerOrchestrationTools(
             },
           };
         }
+      },
+    });
+  }
+
+  if (registry && shouldRegister("subagent_run_cancel")) {
+    pi.registerTool({
+      name: "subagent_run_cancel",
+      label: "Cancel Orchestration",
+      description:
+        "Cancel a running async orchestration by id. Transitions all non-terminal tasks " +
+        "to `cancelled` and fires the standard aggregated completion steer-back. " +
+        "Idempotent on already-terminal runs.",
+      promptSnippet:
+        "Cancel a running async orchestration by id. Idempotent on already-terminal runs.",
+      parameters: CancelParams,
+      async execute(_id, params) {
+        const res = registry.cancel(params.orchestrationId);
+        return {
+          content: [{
+            type: "text",
+            text: res.alreadyTerminal
+              ? `Orchestration "${params.orchestrationId}" already terminal.`
+              : `Orchestration "${params.orchestrationId}" cancelled.`,
+          }],
+          details: res,
+        };
       },
     });
   }
