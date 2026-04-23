@@ -407,4 +407,43 @@ describe("toPublicResults", () => {
     assert.equal(out[0].state, "cancelled");
     assert.equal(out[0].index, 5);
   });
+
+  it("preserves Claude sessionId alongside sessionKey for backward-compat (review-v3 spec-div #3)", () => {
+    // The spec promises sync result shape is additive-only. Before this fix,
+    // Claude sessionId was silently dropped from the public payload while
+    // sessionKey was introduced. Both must flow through for downstream
+    // consumers (docs, external tooling) that still key off sessionId.
+    const input: OrchestrationResult[] = [
+      {
+        name: "claude-step",
+        finalMessage: "ok",
+        transcriptPath: null,
+        exitCode: 0,
+        elapsedMs: 5,
+        sessionId: "claude-sess-abc123",
+        sessionKey: "claude-sess-abc123",
+      },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].sessionKey, "claude-sess-abc123");
+    assert.equal(out[0].sessionId, "claude-sess-abc123",
+      "toPublicResults must preserve sessionId so the additive-compat promise holds");
+  });
+
+  it("omits sessionId when the underlying result has none (pi-only runs)", () => {
+    const input: OrchestrationResult[] = [
+      {
+        name: "pi-step",
+        finalMessage: "ok",
+        transcriptPath: null,
+        exitCode: 0,
+        elapsedMs: 3,
+        sessionKey: "/tmp/sess.jsonl",
+      },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].sessionKey, "/tmp/sess.jsonl");
+    assert.equal(out[0].sessionId, undefined,
+      "non-Claude results should not synthesize a sessionId");
+  });
 });

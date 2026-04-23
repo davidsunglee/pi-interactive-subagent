@@ -351,6 +351,62 @@ describe("runParallel", () => {
   });
 });
 
+describe("runParallel onBlocked worker scheduling", () => {
+  it("a blocked task must not halt a worker that still has pending siblings to claim (review-v3 #1)", async () => {
+    // Repro: maxConcurrency=1, task 0 blocks. The only worker must continue
+    // and claim task 1, launching it. Today the worker `return`s after
+    // onBlocked, so task 1 is never launched and the orchestration-level
+    // post-run sweep will incorrectly cancel it.
+    const launched: string[] = [];
+    const deps: LauncherDeps = {
+      async launch(task) {
+        launched.push(task.name!);
+        return { id: task.name!, name: task.name!, startTime: Date.now(), sessionKey: `/sess/${task.name}` };
+      },
+      async waitForCompletion(handle) {
+        if (handle.name === "t0") {
+          return {
+            name: handle.name,
+            finalMessage: "need input",
+            transcriptPath: null,
+            exitCode: 0,
+            elapsedMs: 1,
+            sessionKey: `/sess/${handle.name}`,
+            ping: { name: "caller_ping", message: "which schema?" },
+          };
+        }
+        return {
+          name: handle.name,
+          finalMessage: "ok",
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: 1,
+          sessionKey: `/sess/${handle.name}`,
+        };
+      },
+    };
+    const blocked: number[] = [];
+    const out = await runParallel(
+      [
+        { name: "t0", agent: "x", task: "t" },
+        { name: "t1", agent: "x", task: "t" },
+      ],
+      {
+        maxConcurrency: 1,
+        onBlocked: (idx) => { blocked.push(idx); },
+      },
+      deps,
+    );
+    assert.deepEqual(blocked, [0], "task 0 should have reported blocked");
+    assert.ok(launched.includes("t1"), `t1 should have been launched after t0 blocked, launches=${launched.join(",")}`);
+    // Blocked slot is registry-owned so results[0] is left undefined; t1
+    // completed so results[1] must be present and completed.
+    assert.equal(out.results[0], undefined);
+    assert.ok(out.results[1]);
+    assert.equal(out.results[1].state, "completed");
+  });
+});
+
 describe("runParallel state + index annotation", () => {
   it("annotates successful tasks with state: 'completed' and failures with 'failed', each with its input-order index", async () => {
     const deps: LauncherDeps = {

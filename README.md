@@ -79,11 +79,15 @@ PI_SUBAGENT_MODE=auto      # default — detect mux, fall back to headless
 
 | Field            | Backend filling it     | Notes                                                                 |
 | ---------------- | ---------------------- | --------------------------------------------------------------------- |
+| `name`           | both                   | Display name; auto-generated per task when omitted from input.        |
+| `index`          | both                   | Input-order index of the task. Always present in the public payload.  |
+| `state`          | both                   | Terminal lifecycle state: `"completed" \| "failed" \| "cancelled"` for sync runs; async runs may also surface `"pending" \| "running" \| "blocked"` mid-flight. |
 | `finalMessage`   | both                   | Last assistant text output.                                           |
 | `transcriptPath` | both                   | Path to the session/transcript file. For pi runs, this is `getDefaultSessionDirFor(effectiveCwd, effectiveAgentDir)` — typically `~/.pi/agent/sessions/<project-slug>/`, but project-local `.pi/agent/` and `PI_CODING_AGENT_DIR` override it. For Claude runs, this is always under `~/.pi/agent/sessions/claude-code/`. |
 | `exitCode`       | both                   | 0 on success, 1 on error / cancellation.                              |
 | `elapsedMs`      | both                   | Wall time from launch to completion.                                  |
-| `sessionId`      | both (Claude only)     | Claude session id — useful for `subagent_resume`.                     |
+| `sessionKey`     | both                   | Resume-addressable identifier. For pi children this is the subagent session file path (accepted directly by `subagent_resume({ sessionPath })`); for Claude children this is the Claude session id. Always populated on successful terminal results; undefined while a task is `pending`. |
+| `sessionId`      | Claude only            | Claude session id — same value as `sessionKey` for Claude runs. Preserved for backward compatibility; pi-backed runs leave it `undefined`. New code should prefer `sessionKey`. |
 | `error`          | both                   | Non-empty when the run didn't cleanly finish.                         |
 | `usage`          | **headless only (v1)** | `{ input, output, cacheRead, cacheWrite, cost, contextTokens, turns }` |
 | `transcript`     | **headless only (v1)** | Parsed array of `TranscriptMessage { role, content[] }`. Content block types: `"text" \| "thinking" \| "toolCall" \| "image"`. Rich provider metadata (stopReason, per-message timestamp/cost) is **not** surfaced here — read the archived `.jsonl` at `transcriptPath` for the full stream. |
@@ -311,18 +315,19 @@ await caller_ping({
 
 When a child spawned through `subagent_run_serial` / `subagent_run_parallel` (with `wait: false`) calls `caller_ping`, the task transitions to a `blocked` state instead of completing:
 
-1. Orchestration emits a `blocked` steer-back with `{ orchestrationId, taskIndex, taskName, sessionKey, message }`. `sessionKey` is the session file path for pi-backed children (same value accepted by `subagent_resume({ sessionPath })`) or the Claude session id for Claude-backed children (accepted by `subagent_resume({ sessionId })`).
+1. Orchestration emits a `blocked` steer-back with `{ orchestrationId, taskIndex, taskName, sessionKey, message }`. For pi-backed children `sessionKey` is the session file path — the same value accepted by `subagent_resume({ sessionPath })`.
 2. Widget row for the task stays visible with a "blocked — awaiting parent" indicator. The row clears as soon as that specific task transitions to any terminal state (completed / failed / cancelled) OR as soon as a `subagent_resume` starts on the owning session — the task's state flips `blocked -> running` and the resumed pane's row takes over.
-3. Parent resumes the child via standalone `subagent_resume` using whichever identifier matches its backend (`sessionPath` for pi, `sessionId` for Claude; pass exactly one). Starting the resume transitions the orchestration slot `blocked -> running`. On terminal completion the result is re-ingested into the original orchestration. If the resumed child pings again, the orchestration re-blocks (recursive unblock loop supported).
+3. Parent resumes the child via standalone `subagent_resume({ sessionPath })`. Starting the resume transitions the orchestration slot `blocked -> running`. On terminal completion the result is re-ingested into the original orchestration. If the resumed child pings again, the orchestration re-blocks (recursive unblock loop supported).
 4. Serial runs resume from the next step using the resumed task's `finalMessage` as `{previous}`; parallel runs re-evaluate aggregation and fire completion once all slots are terminal.
 
 Cancelling a blocked task via `subagent_run_cancel` transitions it to `cancelled` without attempting resume.
 
 **v1 limitations:**
+- **pi-CLI only.** Initial-run `caller_ping` → `blocked` state detection is supported only when the child runs under the pi CLI, which exposes the `caller_ping` tool (see `pi-extension/subagents/subagent-done.ts`). Claude-CLI children (`cli: "claude"`) cannot enter the blocked state from an initial run — Claude's CLI does not expose `caller_ping`, and the bundled Claude Stop hook emits only terminal completion sentinels. A Claude-backed task in async orchestration runs to terminal (success / failure / cancellation); wiring end-to-end Claude ping signaling is deferred to a follow-up (phase-2.5).
 - No depth limit on recursion (pinging child resumed, pings again).
 - Sync orchestrations (`wait: true` or omitted) continue today's behavior: `caller_ping` closes the pane and the task is recorded as `completed` with the ping message as `finalMessage`.
 - No disk persistence of registry / ownership map: a pi crash or `/reload` kills live async runs silently.
-- `subagent_resume` requires a mux backend for both `sessionPath` and `sessionId` paths in v1; without one it returns the standard mux-unavailable result.
+- `subagent_resume` requires a mux backend in v1; without one it returns the standard mux-unavailable result.
 
 ---
 

@@ -250,6 +250,70 @@ describe("block-resume: async runParallel blocked slot does not cascade-cancel s
     assert.equal(snap!.tasks[1].state, "completed");
   });
 
+  it("maxConcurrency:1 + block at task 0 must not strand siblings (review-v3 #1 e2e)", async () => {
+    // Exact reproduction from review-v3 issue #1: with maxConcurrency=1 and
+    // task 0 blocking, the single worker must continue claiming task 1. The
+    // tool-handlers post-run sweep then skips the registry-owned blocked slot
+    // and leaves task 1 in its terminal state (completed). Before the fix, the
+    // worker exited after onBlocked, task 1 was never launched, and the sweep
+    // swept it to "cancelled" as "not launched".
+    let call = 0;
+    const sessionKeyForBlocker = "sess-mx1-block";
+    const deps: LauncherDeps = {
+      async launch(t) {
+        return { id: t.task, name: t.name ?? "s", startTime: Date.now(), sessionKey: `sess-${t.task}` };
+      },
+      async waitForCompletion(h) {
+        const i = call++;
+        if (i === 0) {
+          return {
+            name: h.name, finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 0,
+            sessionKey: sessionKeyForBlocker,
+            ping: { name: h.name, message: "need input" },
+          };
+        }
+        return { name: h.name, finalMessage: "ok", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+
+    const emitted: any[] = [];
+    const registry = createRegistry((p) => emitted.push(p));
+    const tools: any[] = [];
+    const api = {
+      registerTool: (t: any) => tools.push(t),
+      on() {}, registerCommand() {}, registerMessageRenderer() {},
+      sendMessage() {}, sendUserMessage() {},
+    } as any;
+    registerOrchestrationTools(api, () => deps, () => true, () => null, () => null, { registry });
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
+
+    const env = await parallel.execute(
+      "par-mx1-block",
+      { wait: false, maxConcurrency: 1, tasks: [
+        { name: "a", agent: "x", task: "t1" },
+        { name: "b", agent: "x", task: "t2" },
+      ] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+
+    const orchId = env.details.orchestrationId;
+    const snap = registry.getSnapshot(orchId);
+    assert.ok(snap);
+    assert.equal(snap!.tasks[0].state, "blocked",
+      "task 0 must be blocked (it called caller_ping)");
+    assert.equal(snap!.tasks[1].state, "completed",
+      "task 1 must have been launched after task 0 blocked and completed normally — " +
+      "before the fix, the lone worker exited on block and the sweep cancelled task 1");
+
+    // No aggregated completion yet (task 0 is still blocked).
+    assert.equal(emitted.find((e) => e.kind === ORCHESTRATION_COMPLETE_KIND), undefined,
+      "orchestration must stay open while task 0 is blocked");
+  });
+
   it("parallel block-resume: blocked task resumes to completed, aggregated completion fires", async () => {
     // Task 0 blocks (parallel), task 1 completes.
     // After resume of task 0 to completed, tryFinalize should fire aggregated completion.

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Stop hook for pi-spawned Claude sessions.
 # Writes a sentinel file when Claude completes autonomously (no user interjection).
+#
+# v1 scope (review-v3 #2): this hook emits TERMINAL completion sentinels only.
+# It does NOT emit a structured `caller_ping` sentinel, because the Claude CLI
+# does not expose the `caller_ping` tool (that tool lives in pi's
+# `subagent-done.ts` extension, which is loaded only into pi children). A
+# Claude child inside an async orchestration therefore cannot enter the
+# `blocked` state from an initial run — it runs to terminal. End-to-end Claude
+# ping signaling is deferred to phase-2.5 and would need a new mechanism
+# (MCP-registered `caller_ping`, or a magic-string pattern this hook could parse
+# out of `last_assistant_message`) plus propagation through the watcher.
 
 set -euo pipefail
 

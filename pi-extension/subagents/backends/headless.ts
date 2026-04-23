@@ -526,6 +526,14 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
   });
 }
 
+// v1 scope (review-v3 #2): Claude-CLI children do not emit `caller_ping`. The
+// Claude CLI does not expose that tool (it is registered by pi's
+// `subagent-done.ts` extension, which is only loaded inside pi children), and
+// the bundled Claude Stop hook writes a terminal-completion sentinel only.
+// This runner therefore never populates `BackendResult.ping`; a Claude task
+// inside async orchestration runs to terminal. End-to-end Claude ping
+// signaling (MCP tool or magic-string + Stop-hook sentinel + runner propagation)
+// is deferred to phase-2.5.
 async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
   const { spec, startTime, abort, ctx, emitPartial: emit } = p;
   const transcript: TranscriptMessage[] = [];

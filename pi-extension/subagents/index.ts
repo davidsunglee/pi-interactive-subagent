@@ -988,6 +988,13 @@ export async function watchSubagent(
       closeSurface(surface);
       runningSubagents.delete(running.id);
 
+      // v1 scope (review-v3 #2): Claude-CLI children do not signal `caller_ping`
+      // on an initial run — the Claude CLI does not expose that tool, and the
+      // bundled Stop hook emits terminal-completion sentinels only. So this
+      // branch intentionally omits `ping` from its return shape; Claude-backed
+      // tasks run to terminal (success / failure / cancellation). End-to-end
+      // Claude ping signaling (MCP tool + Stop-hook sentinel + watcher path) is
+      // deferred to phase-2.5.
       return {
         name,
         task,

@@ -104,7 +104,10 @@ export function registerOrchestrationTools(
       description:
         "Run a sequence of subagent tasks in order. Each task's output is available to the next " +
         "as `{previous}`. Stops on first failure. Blocks the caller until the full sequence " +
-        "completes (or errors). Use for pipelines where step N depends on step N-1.",
+        "completes (or errors). Use for pipelines where step N depends on step N-1. " +
+        "When `wait: false`, the orchestration delivers its aggregated result via steer-back. " +
+        "Tasks may enter `blocked` state when a pi-CLI child calls `caller_ping` (Claude-CLI " +
+        "children cannot block in v1 — they run to terminal).",
       promptSnippet:
         "Run a sequence of subagent tasks in order. Each task's output is available to the next " +
         "as `{previous}`. Stops on first failure. Blocks until the sequence completes.",
@@ -245,7 +248,10 @@ export function registerOrchestrationTools(
         "tasks complete. Partial failures don't cancel siblings; each result is reported. " +
         "Panes are spawned detached by default on tmux; other mux backends (cmux, zellij, " +
         "wezterm) currently focus the new pane regardless — use the widget or native mux " +
-        "shortcuts to navigate. Per-task `focus: true` overrides on any backend.",
+        "shortcuts to navigate. Per-task `focus: true` overrides on any backend. " +
+        "When `wait: false`, the orchestration delivers its aggregated result via steer-back. " +
+        "Tasks may enter `blocked` state when a pi-CLI child calls `caller_ping` (Claude-CLI " +
+        "children cannot block in v1 — they run to terminal).",
       promptSnippet:
         "Run a batch of subagent tasks concurrently (default 4, hard cap 8). Blocks until all " +
         "tasks complete. Partial failures are reported independently. Detached spawn is " +
@@ -407,6 +413,11 @@ export function toPublicResults(results: OrchestrationResult[]): OrchestratedTas
     elapsedMs: r.elapsedMs,
     exitCode: r.exitCode,
     sessionKey: r.sessionKey,
+    // Keep the pre-lifecycle `sessionId` field alongside `sessionKey` so the
+    // sync-mode result shape remains additive-only (review-v3 spec-div #3).
+    // Only carry it through when the backend actually produced one — it is a
+    // Claude-only field; pi-backed runs leave it undefined.
+    ...(r.sessionId ? { sessionId: r.sessionId } : {}),
     error: r.error,
     usage: r.usage,
     transcript: r.transcript,

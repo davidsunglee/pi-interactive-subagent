@@ -33,6 +33,7 @@ These are thematically linked because each one extends the set of lifecycle stat
 - **No timeouts or liveness guarantees.** A never-answered block hangs the orchestration until manually cancelled.
 - **No bare-subagent cancellation.** `subagent_run_cancel` cancels orchestrations only.
 - **No pane-backend `usage` / `transcript` parity work.** That's P2's scope. This spec's cumulative-on-resume rule applies only to fields the current backend already populates.
+- **No Claude-CLI `caller_ping` signaling.** Initial-run block-state detection is pi-CLI only in v1. The Claude CLI does not expose `caller_ping` (it is registered by pi's `subagent-done.ts` extension, loaded only into pi children), and the bundled Claude Stop hook emits terminal-completion sentinels only. A Claude-backed task inside an async orchestration runs to terminal (success / failure / cancellation); wiring end-to-end Claude ping signaling (MCP-registered tool or magic-string pattern + Stop-hook sentinel + watcher propagation) is deferred to phase-2.5. The resume/re-ingestion path is backend-agnostic and continues to work for Claude session ids.
 - **No orchestration grouping in the widget.** Per-pane rows with state indicators only.
 - **Sync orchestrations remain fully backward-compatible** in behavior. Their results gain the new additive `state` field only.
 
@@ -240,7 +241,11 @@ Populated when each task launches — the key is known to the backend at that po
 
 ### Detecting a block
 
-The existing Claude Stop-hook plugin already emits structured sentinels distinguishing `subagent_done` from `caller_ping`. Extend the completion watcher in `pi-extension/subagents/` to surface the `caller_ping` case as a distinct event rather than folding it into normal completion. On receiving the event for a child whose `sessionKey` is in the ownership map, the registry transitions the task:
+Block detection is **pi-CLI only in v1** (see Non-goals). The pi `caller_ping` tool (registered in `pi-extension/subagents/subagent-done.ts`) writes an `.exit` sidecar file with `type: "ping"`, which the pane poll loop and headless close handler both consume and translate into `BackendResult.ping`. The orchestration runner treats a ping-carrying result as a block signal instead of a terminal completion.
+
+The bundled Claude Stop hook intentionally does NOT emit a ping sentinel (Claude has no `caller_ping` tool and the hook has no reliable way to synthesize one). A Claude-backed task therefore cannot emit a ping on an initial run; it runs to terminal. End-to-end Claude ping signaling is deferred to phase-2.5.
+
+On receiving a pi-backed ping event for a child whose `sessionKey` is in the ownership map, the registry transitions the task:
 
 1. State `running → blocked`.
 2. Usage / transcript accumulators frozen at point-in-time (cumulative on eventual resume).

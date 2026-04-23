@@ -140,8 +140,13 @@ export async function runParallel(
               transcript: result.transcript,
             },
           });
-          // Leave results[i] undefined — registry owns this slot. Worker exits normally.
-          return;
+          // Leave results[i] undefined — registry owns this slot. The worker
+          // MUST continue claiming later pending siblings so that maxConcurrency
+          // exhaustion by a block does not strand them (review-v3 #1): with
+          // maxConcurrency=1 the only worker would exit, runParallel would
+          // finish, and the caller's post-run sweep would wrongly cancel the
+          // untouched tail.
+          continue;
         }
         // Sync path: fold ping.message into finalMessage and mark as completed.
         result = { ...result, finalMessage: result.ping.message, state: "completed" };
