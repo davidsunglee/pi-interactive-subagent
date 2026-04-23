@@ -744,6 +744,118 @@ describe("subagents widget rendering", () => {
       }
     }
   });
+
+  it("renders blocked tasks with a distinct status, keyed on (orchestrationId, taskIndex)", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const originalNow = Date.now;
+    Date.now = () => 1_000_000;
+    try {
+      const lines = testApi.renderSubagentWidgetLines(
+        [
+          {
+            id: "a1",
+            name: "A",
+            task: "",
+            backend: "pane",
+            startTime: 1_000_000 - 5000,
+            blocked: {
+              orchestrationId: "7a3f91e2",
+              taskIndex: 0,
+              message: "which schema?",
+            },
+          },
+        ],
+        60,
+      );
+      // Find the row that actually corresponds to the agent (skip the title
+      // which has "N running" — that's about the count, not this row's state).
+      const row = lines.find((l) => l.includes(" A ")) ?? "";
+      assert.ok(/blocked/i.test(row), `expected blocked indicator in row, got: ${row}`);
+      assert.ok(
+        !/starting…|running…/i.test(row),
+        `blocked row must not say starting…/running…, got: ${row}`,
+      );
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("removes a virtual blocked row when that task transitions to terminal, even if the orchestration is still running", () => {
+    const testApi = (subagentsModule as any).__test__;
+    // Minimal fake pi (emitter routes through piForRegistry → sendMessage).
+    const fakePi = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      registerMessageRenderer: () => {},
+      sendUserMessage: () => {},
+      sendMessage: () => {},
+      on: () => {},
+    };
+    (subagentsModule as any).default(fakePi);
+    testApi.resetRegistry();
+    const registry = testApi.getRegistry();
+    const running = testApi.getRunningSubagents();
+    const virt = testApi.getVirtualBlocked();
+
+    const id = registry.dispatchAsync({
+      config: { mode: "parallel", tasks: [
+        { name: "a", agent: "x", task: "t1" },
+        { name: "b", agent: "x", task: "t2" },
+      ] },
+    });
+    registry.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    registry.onTaskLaunched(id, 1, { sessionKey: "sess-b" });
+    registry.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "?" });
+
+    const key = `${id}:0`;
+    assert.ok(virt.has(key), "virtual blocked row must exist after onTaskBlocked");
+    assert.ok(running.has(`virt-${key}`), "runningSubagents must contain the virtual row");
+
+    // Only task 0 goes terminal; task 1 still running. The virtual row must
+    // clear right now, not wait for orchestration_complete.
+    registry.onTaskTerminal(id, 0, {
+      name: "a", index: 0, state: "completed", exitCode: 0, elapsedMs: 1,
+    });
+    assert.ok(!virt.has(key), "virtual blocked row must be dropped on per-task terminal");
+    assert.ok(!running.has(`virt-${key}`), "runningSubagents must no longer contain the virtual row");
+  });
+
+  it("removes the virtual blocked row the moment subagent_resume starts (blocked -> running)", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const fakePi = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      registerMessageRenderer: () => {},
+      sendUserMessage: () => {},
+      sendMessage: () => {},
+      on: () => {},
+    };
+    (subagentsModule as any).default(fakePi);
+    testApi.resetRegistry();
+    const registry = testApi.getRegistry();
+    const running = testApi.getRunningSubagents();
+    const virt = testApi.getVirtualBlocked();
+
+    const id = registry.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    registry.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    registry.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "?" });
+
+    const key = `${id}:0`;
+    assert.ok(virt.has(key), "virtual blocked row must exist after block");
+    assert.ok(running.has(`virt-${key}`), "runningSubagents must contain virt row");
+
+    registry.onResumeStarted("sess-a");
+
+    assert.ok(!virt.has(key), "virtual row must be dropped on resume-start");
+    assert.ok(!running.has(`virt-${key}`), "runningSubagents must not contain virt row after resume-start");
+    assert.equal(
+      registry.getSnapshot(id).tasks[0].state,
+      "running",
+      "registry snapshot must transition blocked -> running on resume-start",
+    );
+  });
 });
 
 describe("cmux.ts", () => {

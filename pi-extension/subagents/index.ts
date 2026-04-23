@@ -328,6 +328,18 @@ export interface RunningSubagent {
   abortController?: AbortController;
   cli?: string;
   sentinelFile?: string;
+  /**
+   * Set on virtual rows installed when an orchestration task transitions to
+   * `blocked`. Keyed externally on `(orchestrationId, taskIndex)` via the
+   * `virtualBlocked` map so the widget keeps rendering the blocked state
+   * after the child's own pane closes. Real running subagents never carry
+   * this field.
+   */
+  blocked?: {
+    orchestrationId: string;
+    taskIndex: number;
+    message: string;
+  };
 }
 
 /** All currently running subagents, keyed by id. */
@@ -419,12 +431,16 @@ function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): st
     const elapsed = formatElapsedMMSS(agent.startTime);
     const agentTag = agent.agent ? ` (${agent.agent})` : "";
     const left = ` ${elapsed}  ${agent.name}${agentTag} `;
-    const right =
-      agent.entries != null && agent.bytes != null
-        ? ` ${agent.entries} msgs (${formatBytes(agent.bytes)}) `
-        : agent.cli === "claude"
-          ? " running… "
-          : " starting… ";
+    let right: string;
+    if (agent.blocked) {
+      right = " blocked — awaiting parent ";
+    } else if (agent.entries != null && agent.bytes != null) {
+      right = ` ${agent.entries} msgs (${formatBytes(agent.bytes)}) `;
+    } else if (agent.cli === "claude") {
+      right = " running… ";
+    } else {
+      right = " starting… ";
+    }
 
     lines.push(borderLine(left, right, width));
   }
@@ -475,11 +491,20 @@ export const __test__ = {
   setWatchSubagentOverride(fn: typeof watchSubagent | null) { watchSubagentOverride = fn; },
   getWatchSubagentOverride(): typeof watchSubagent | null { return watchSubagentOverride; },
   getRegistry(): Registry { return registry; },
-  resetRegistry() { registry = createRegistry(registryEmitter as any, registryHooks); },
+  resetRegistry() {
+    // Drop any virtual blocked rows the previous registry installed so tests
+    // don't bleed widget state across cases.
+    for (const [, virt] of virtualBlocked) runningSubagents.delete(virt.id);
+    virtualBlocked.clear();
+    registry = createRegistry(registryEmitter as any, registryHooks);
+  },
   setMuxAvailableOverride(value: boolean | null) { muxAvailableOverride = value; },
   getMuxAvailableOverride(): boolean | null { return muxAvailableOverride; },
   setSurfaceOverrides(overrides: typeof surfaceOverrides) { surfaceOverrides = overrides; },
   getSurfaceOverrides() { return surfaceOverrides; },
+  // Task 13: widget introspection for tests.
+  getRunningSubagents() { return runningSubagents; },
+  getVirtualBlocked() { return virtualBlocked; },
 };
 
 function startWidgetRefresh() {
@@ -1063,10 +1088,27 @@ let surfaceOverrides: {
 // the emitter reads through it so a test that swaps the pi handle sees it.
 let piForRegistry: ExtensionAPI | null = null;
 
+// Virtual blocked widget rows, keyed on `${orchestrationId}:${taskIndex}`.
+// Installed when the registry emits `BLOCKED_KIND` so the widget keeps showing
+// the blocked state after the child's own pane closes. Cleared on per-task
+// terminal transitions and on resume-start (the spec's `blocked -> running`
+// leg at the widget layer).
+const virtualBlocked = new Map<string, RunningSubagent>();
+
+function dropVirtualBlocked(orchestrationId: string, taskIndex: number): void {
+  const key = `${orchestrationId}:${taskIndex}`;
+  const virt = virtualBlocked.get(key);
+  if (!virt) return;
+  runningSubagents.delete(virt.id);
+  virtualBlocked.delete(key);
+  updateWidget();
+}
+
 // Hoisted so resetRegistry() can reconstruct the same wiring.
 const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
   if (!piForRegistry) return;
   if (payload.kind === ORCHESTRATION_COMPLETE_KIND) {
+    updateWidget();
     piForRegistry.sendMessage({
       customType: "orchestration_complete",
       content:
@@ -1076,6 +1118,23 @@ const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
       details: payload,
     }, { triggerTurn: true, deliverAs: "steer" });
   } else if (payload.kind === BLOCKED_KIND) {
+    const key = `${payload.orchestrationId}:${payload.taskIndex}`;
+    const entry: RunningSubagent = {
+      id: `virt-${key}`,
+      name: payload.taskName,
+      task: "",
+      backend: "pane",
+      startTime: Date.now(),
+      blocked: {
+        orchestrationId: payload.orchestrationId,
+        taskIndex: payload.taskIndex,
+        message: payload.message,
+      },
+    };
+    virtualBlocked.set(key, entry);
+    runningSubagents.set(entry.id, entry);
+    startWidgetRefresh();
+    updateWidget();
     piForRegistry.sendMessage({
       customType: BLOCKED_KIND,
       content:
@@ -1086,12 +1145,19 @@ const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
   }
 };
 
-// Task 13 fills these bodies with virtual-widget cleanup. Phase 1 leaves them no-op.
-function onOrchestrationTaskTerminal(_orchestrationId: string, _taskIndex: number): void {
-  // no-op (Task 13)
+// Per-task terminal cleanup: drops the virtual blocked row the instant a
+// specific (orchestrationId, taskIndex) slot goes terminal, without waiting
+// for the whole orchestration to complete.
+function onOrchestrationTaskTerminal(orchestrationId: string, taskIndex: number): void {
+  dropVirtualBlocked(orchestrationId, taskIndex);
 }
-function onOrchestrationResumeStarted(_orchestrationId: string, _taskIndex: number): void {
-  // no-op (Task 13)
+
+// Resume-start cleanup: drops the virtual blocked row the moment a standalone
+// subagent_resume starts on the owning sessionKey (the spec's `blocked ->
+// running` leg at the widget layer). This prevents the stale virtual row from
+// rendering alongside the resumed pane's real RunningSubagent row.
+function onOrchestrationResumeStarted(orchestrationId: string, taskIndex: number): void {
+  dropVirtualBlocked(orchestrationId, taskIndex);
 }
 
 const registryHooks = {
