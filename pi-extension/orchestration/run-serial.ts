@@ -103,7 +103,7 @@ export async function runSerial(
       : undefined;
     try {
       const handle = await deps.launch(task, true /* defaultFocus */, opts.signal);
-      opts.onLaunched?.(i, { sessionKey: (handle as any).sessionKey });
+      opts.onLaunched?.(i, { sessionKey: handle.sessionKey });
       result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate);
     } catch (err: any) {
       result = {

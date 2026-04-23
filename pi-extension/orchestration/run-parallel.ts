@@ -93,7 +93,7 @@ export async function runParallel(
         : undefined;
       try {
         const handle = await deps.launch(task, false /* defaultFocus */, opts.signal);
-        opts.onLaunched?.(i, { sessionKey: (handle as any).sessionKey });
+        opts.onLaunched?.(i, { sessionKey: handle.sessionKey });
         result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate);
       } catch (err: any) {
         result = {

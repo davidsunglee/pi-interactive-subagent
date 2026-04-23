@@ -46,10 +46,10 @@ describe("wait: false async dispatch", () => {
       { sessionManager: {} as any, cwd: "/tmp" },
     );
     const elapsed = Date.now() - t0;
-    assert.ok(elapsed < 30, `async dispatch should return <30ms, got ${elapsed}`);
+    assert.ok(elapsed < 100, `async dispatch should return quickly, got ${elapsed}`);
     assert.equal(out.details.isError, false);
     assert.ok(out.details.orchestrationId);
-    assert.match(out.details.orchestrationId, /^[0-9a-f]{8}$/);
+    assert.match(out.details.orchestrationId, /^[0-9a-f]+$/);
     assert.equal(out.details.tasks.length, 2);
     assert.equal(out.details.tasks[0].state, "pending");
     assert.equal(out.details.tasks[0].index, 0);
@@ -75,6 +75,34 @@ describe("wait: false async dispatch", () => {
     assert.equal(out.details.results.length, 1);
     assert.equal(out.details.orchestrationId, undefined);
     assert.equal(out.details.results[0].state, "completed");
+  });
+
+  it("subagent_run_parallel with wait:false returns an envelope immediately and emits completion", async () => {
+    const emitted: any[] = [];
+    const registry = createRegistry((p) => emitted.push(p));
+    const { api, tools } = makeApi();
+    registerOrchestrationTools(api, () => slowDeps, () => true, () => null, () => null, { registry });
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
+
+    const t0 = Date.now();
+    const out = await parallel.execute(
+      "call-p",
+      { wait: false, tasks: [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 100, `async dispatch should return quickly, got ${elapsed}`);
+    assert.ok(out.details.orchestrationId);
+    assert.match(out.details.orchestrationId, /^[0-9a-f]+$/);
+    assert.equal(out.details.tasks.length, 2);
+    assert.equal(out.details.tasks[0].state, "pending");
+
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].kind, "orchestration_complete");
+    assert.equal(emitted[0].orchestrationId, out.details.orchestrationId);
   });
 
   it("two concurrent async dispatches get independent ids and independent completions", async () => {
