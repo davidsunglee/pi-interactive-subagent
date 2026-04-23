@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
-  launchSubagent,
-  watchSubagent,
+  launchSubagent as defaultLaunchSubagent,
+  watchSubagent as defaultWatchSubagent,
   type RunningSubagent,
 } from "../index.ts";
 import type {
@@ -12,11 +12,25 @@ import type {
   LaunchedHandle,
 } from "./types.ts";
 
-export function makePaneBackend(ctx: {
-  sessionManager: ExtensionContext["sessionManager"];
-  cwd: string;
-}): Backend {
+/**
+ * Test seam: lets unit tests substitute the heavy `launchSubagent` /
+ * `watchSubagent` implementations without exercising real mux/pane I/O.
+ */
+export interface PaneBackendOverrides {
+  launchSubagent?: typeof defaultLaunchSubagent;
+  watchSubagent?: typeof defaultWatchSubagent;
+}
+
+export function makePaneBackend(
+  ctx: {
+    sessionManager: ExtensionContext["sessionManager"];
+    cwd: string;
+  },
+  overrides?: PaneBackendOverrides,
+): Backend {
   const handleToRunning = new Map<string, RunningSubagent>();
+  const launchSubagent = overrides?.launchSubagent ?? defaultLaunchSubagent;
+  const watchSubagent = overrides?.watchSubagent ?? defaultWatchSubagent;
 
   return {
     async launch(
@@ -44,7 +58,18 @@ export function makePaneBackend(ctx: {
         ctx,
       );
       handleToRunning.set(running.id, running);
-      return { id: running.id, name: running.name, startTime: running.startTime, sessionKey: running.sessionFile };
+      // Review-v1 #1: Claude pane launches must NOT advertise the unused pi
+      // `subagentSessionFile` placeholder as the resume key. The Claude session
+      // id isn't known until system/init writes the pointer; let watch()'s
+      // onSessionKey hook late-bind ownership via registry.updateSessionKey.
+      const launchSessionKey =
+        running.cli === "claude" ? undefined : running.sessionFile;
+      return {
+        id: running.id,
+        name: running.name,
+        startTime: running.startTime,
+        sessionKey: launchSessionKey,
+      };
     },
 
     async watch(
@@ -83,6 +108,13 @@ export function makePaneBackend(ctx: {
         const sub = await watchSubagent(running, abort.signal, {
           onSessionKey: (key) => hooks?.onSessionKey?.(key),
         });
+        // Review-v1 #1: For Claude, the resume-addressable key is the Claude
+        // session id (the value the parent passes back via subagent_resume).
+        // The pi `running.sessionFile` placeholder is irrelevant on this path.
+        const watchSessionKey =
+          running.cli === "claude"
+            ? sub.claudeSessionId
+            : running.sessionFile;
         return {
           name: handle.name,
           finalMessage: sub.summary,
@@ -90,7 +122,7 @@ export function makePaneBackend(ctx: {
           exitCode: sub.exitCode,
           elapsedMs: sub.elapsed * 1000,
           sessionId: sub.claudeSessionId,
-          sessionKey: running.sessionFile ?? sub.claudeSessionId,
+          sessionKey: watchSessionKey,
           error: sub.error,
           ping: sub.ping,
         };

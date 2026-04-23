@@ -104,6 +104,15 @@ export interface Registry {
   }): void;
   onResumeStarted(sessionKey: string): void;
   onResumeTerminal(sessionKey: string, result: OrchestratedTaskResult): void;
+  /**
+   * Track an in-flight resume watcher so that `cancel(orchestrationId)` can
+   * reach detached resume executions whose `sessionKey` is owned by the
+   * cancelled orchestration (review-v1 #2). Standalone resumes (sessionKey
+   * not in the ownership map) are still registered — they're cheap to track
+   * and the registry simply never aborts them.
+   */
+  registerResumeController(sessionKey: string, controller: AbortController): void;
+  unregisterResumeController(sessionKey: string): void;
   cancel(orchestrationId: string): { ok: true; alreadyTerminal?: boolean };
   getAbortSignal(orchestrationId: string): AbortSignal | null;
   getSnapshot(orchestrationId: string): { tasks: OrchestratedTaskResult[] } | null;
@@ -122,6 +131,10 @@ function isTerminalState(s: OrchestrationState): s is "completed" | "failed" | "
 export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {}): Registry {
   const entries = new Map<string, OrchestrationEntry>();
   const ownership = new Map<string, { orchestrationId: string; taskIndex: number }>();
+  // Active resume watchers, keyed by sessionKey. Used by cancel() to abort
+  // detached resume executions whose sessionKey is owned by the cancelled
+  // orchestration (review-v1 #2).
+  const resumeControllers = new Map<string, AbortController>();
 
   function safeEmit(payload: RegistryEmission): void {
     try {
@@ -154,6 +167,24 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
     // Clear ownership entries for this orchestration.
     for (const [key, own] of ownership) {
       if (own.orchestrationId === entry.id) ownership.delete(key);
+    }
+    // Drop any lingering resume controllers that referenced this orchestration's
+    // sessions (no-op if the resume tool already deregistered them).
+    for (const sessionKey of entry.sessionKeys.values()) {
+      resumeControllers.delete(sessionKey);
+    }
+    // Review-v1 #4 (minor): once the aggregated completion has been emitted,
+    // strip the heavy per-task payload fields (full transcripts and usage
+    // arrays) so a long-lived parent that runs many async orchestrations does
+    // not accumulate unbounded memory. Keep the lightweight bookkeeping
+    // (state, name, index, finalMessage, transcriptPath, sessionKey, exit
+    // metadata) — those are tiny tombstones that preserve idempotent
+    // cancel-on-terminal semantics and post-mortem inspection.
+    for (let i = 0; i < entry.tasks.length; i++) {
+      const t = entry.tasks[i];
+      if (t.transcript || t.usage) {
+        entry.tasks[i] = { ...t, transcript: undefined, usage: undefined };
+      }
     }
   }
 
@@ -320,12 +351,30 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
       return entry ? entry.abort.signal : null;
     },
 
+    registerResumeController(sessionKey, controller) {
+      resumeControllers.set(sessionKey, controller);
+    },
+
+    unregisterResumeController(sessionKey) {
+      resumeControllers.delete(sessionKey);
+    },
+
     cancel(orchestrationId) {
       const entry = entries.get(orchestrationId);
       if (!entry || entry.overallState !== "running") {
         return { ok: true, alreadyTerminal: true };
       }
       entry.abort.abort();
+      // Review-v1 #2: abort any detached resume watchers whose sessionKey is
+      // owned by this orchestration. Without this, a `blocked -> running` task
+      // started via standalone subagent_resume would keep executing after the
+      // orchestration's user-visible state flipped to `cancelled`.
+      for (const sessionKey of entry.sessionKeys.values()) {
+        const controller = resumeControllers.get(sessionKey);
+        if (controller) {
+          try { controller.abort(); } catch { /* defensive */ }
+        }
+      }
       const cancelledIndices: number[] = [];
       for (let i = 0; i < entry.tasks.length; i++) {
         const t = entry.tasks[i];

@@ -1752,11 +1752,21 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const watcherAbort = new AbortController();
         running.abortController = watcherAbort;
 
+        // Review-v1 #2: register the watcher's controller so a later
+        // subagent_run_cancel can abort this detached resume execution if its
+        // sessionKey is owned by the cancelled orchestration. Standalone
+        // resumes (unowned) register too — registry simply never aborts them.
+        registry.registerResumeController(sessionKey, watcherAbort);
+
         // Test seam: Task 7b (__test__.setWatchSubagentOverride).
         const watcher = watchSubagentOverride ?? watchSubagent;
         watcher(running, watcherAbort.signal)
           .then((result) => {
             updateWidget();
+            // Review-v1 #2: deregister the watcher controller now that this
+            // resume execution is no longer in flight. (For ping → re-block,
+            // the next resume call will re-register a fresh controller.)
+            registry.unregisterResumeController(sessionKey);
             const owner = registry.lookupOwner(sessionKey);
 
             if (result.ping) {
@@ -1822,12 +1832,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             if (owner) {
               const snap = registry.getSnapshot(owner.orchestrationId);
               const taskName = snap?.tasks[owner.taskIndex].name ?? `task-${owner.taskIndex + 1}`;
+              // Review-v1 #3: preserve the transcript path watchSubagent
+              // discovered (archived Claude transcript path on the Claude
+              // branch; resumed pi session path on the pi branch). Hard-coding
+              // null here erased the only pointer to the resumed child's
+              // transcript in the final orchestration_complete payload.
+              const transcriptPath =
+                result.transcriptPath
+                ?? (isPiResume ? params.sessionPath ?? null : null);
               registry.onResumeTerminal(sessionKey, {
                 name: taskName,
                 index: owner.taskIndex,
                 state: result.exitCode === 0 && !result.error ? "completed" : "failed",
                 finalMessage: summary,
-                transcriptPath: null,
+                transcriptPath,
                 elapsedMs: result.elapsed * 1000,
                 exitCode: result.exitCode,
                 sessionKey,
@@ -1837,6 +1855,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           })
           .catch((err) => {
             updateWidget();
+            registry.unregisterResumeController(sessionKey);
             pi.sendMessage(
               {
                 customType: "subagent_result",
