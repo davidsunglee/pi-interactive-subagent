@@ -308,9 +308,24 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
         entry?.tasks[own.taskIndex].state === "blocked" ||
         entry?.tasks[own.taskIndex].state === "running";
 
+      // Review-v5 finding 1: the blocked snapshot may carry a point-in-time
+      // `usage`/`transcript` captured from a headless backend at block time.
+      // The standalone resume path runs in the pane backend (v1), which does
+      // not populate those fields, so merging a bare resume result would
+      // silently preserve the pre-block accumulators and present partial
+      // telemetry as the authoritative final payload. Materialize both keys
+      // on the incoming result so the subsequent spread in onTaskTerminal
+      // explicitly overwrites the stale snapshot. If a future backend
+      // populates them on the resume leg, those values flow through unchanged.
+      const normalized: OrchestratedTaskResult = {
+        ...result,
+        usage: result.usage,
+        transcript: result.transcript,
+      };
+
       // (1) Apply the resumed result — tryFinalize runs inside onTaskTerminal
       // but is a no-op for a serial run with pending tail still present.
-      registry.onTaskTerminal(own.orchestrationId, own.taskIndex, result);
+      registry.onTaskTerminal(own.orchestrationId, own.taskIndex, normalized);
 
       if (!entry) return;
 

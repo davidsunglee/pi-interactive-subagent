@@ -87,7 +87,6 @@ PI_SUBAGENT_MODE=auto      # default — detect mux, fall back to headless
 | `exitCode`       | both                   | 0 on success, 1 on error / cancellation.                              |
 | `elapsedMs`      | both                   | Wall time from launch to completion.                                  |
 | `sessionKey`     | both                   | Resume-addressable identifier. For pi children this is the subagent session file path (accepted directly by `subagent_resume({ sessionPath })`); for Claude children this is the Claude session id. Always populated on successful terminal results; undefined while a task is `pending`. |
-| `sessionId`      | Claude only            | Claude session id — same value as `sessionKey` for Claude runs. Preserved for backward compatibility; pi-backed runs leave it `undefined`. New code should prefer `sessionKey`. |
 | `error`          | both                   | Non-empty when the run didn't cleanly finish.                         |
 | `usage`          | **headless only (v1)** | `{ input, output, cacheRead, cacheWrite, cost, contextTokens, turns }` |
 | `transcript`     | **headless only (v1)** | Parsed array of `TranscriptMessage { role, content[] }`. Content block types: `"text" \| "thinking" \| "toolCall" \| "image"`. Rich provider metadata (stopReason, per-message timestamp/cost) is **not** surfaced here — read the archived `.jsonl` at `transcriptPath` for the full stream. |

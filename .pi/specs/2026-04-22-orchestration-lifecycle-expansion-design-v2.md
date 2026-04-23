@@ -109,7 +109,8 @@ type OrchestratedTaskResult = {
 ### Usage / transcript semantics across states
 
 - **Running → blocked.** Accumulators freeze at point-in-time. Reading a non-terminal task's `usage`/`transcript` returns the snapshot as of the block.
-- **Blocked → running (via resume).** The resumed child reuses the same session; accumulators extend cumulatively.
+- **Blocked → running (via resume).** The resumed child reuses the same session; accumulators extend cumulatively **when the resume leg's backend populates `usage`/`transcript`**.
+  - In v1, the standalone `subagent_resume` tool runs in the pane backend, which does **not** populate `usage`/`transcript`. To avoid presenting the pre-block snapshot as the final payload (it's incomplete — the resume leg did additional work that's not captured), the registry drops those fields on resume terminal. When pane-backend `usage`/`transcript` parity lands (P2), true cumulative extension becomes the default.
 - **Cancelled.** Whatever was captured before cancellation; stable at that snapshot.
 
 Pane-backend parity for `usage` / `transcript` is P2's scope and is out of scope here.

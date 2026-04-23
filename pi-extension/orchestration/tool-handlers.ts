@@ -413,11 +413,6 @@ export function toPublicResults(results: OrchestrationResult[]): OrchestratedTas
     elapsedMs: r.elapsedMs,
     exitCode: r.exitCode,
     sessionKey: r.sessionKey,
-    // Keep the pre-lifecycle `sessionId` field alongside `sessionKey` so the
-    // sync-mode result shape remains additive-only (review-v3 spec-div #3).
-    // Only carry it through when the backend actually produced one — it is a
-    // Claude-only field; pi-backed runs leave it undefined.
-    ...(r.sessionId ? { sessionId: r.sessionId } : {}),
     error: r.error,
     usage: r.usage,
     transcript: r.transcript,

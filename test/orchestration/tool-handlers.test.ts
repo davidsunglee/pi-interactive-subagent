@@ -408,11 +408,10 @@ describe("toPublicResults", () => {
     assert.equal(out[0].index, 5);
   });
 
-  it("preserves Claude sessionId alongside sessionKey for backward-compat (review-v3 spec-div #3)", () => {
-    // The spec promises sync result shape is additive-only. Before this fix,
-    // Claude sessionId was silently dropped from the public payload while
-    // sessionKey was introduced. Both must flow through for downstream
-    // consumers (docs, external tooling) that still key off sessionId.
+  it("does not emit a redundant sessionId alongside sessionKey (review-v5 finding 2)", () => {
+    // sessionKey is the single resume-addressable identifier for both backends.
+    // Prior versions copied sessionId through for a now-removed backward-compat
+    // promise; the public orchestration result now exposes only sessionKey.
     const input: OrchestrationResult[] = [
       {
         name: "claude-step",
@@ -426,11 +425,11 @@ describe("toPublicResults", () => {
     ];
     const out = toPublicResults(input);
     assert.equal(out[0].sessionKey, "claude-sess-abc123");
-    assert.equal(out[0].sessionId, "claude-sess-abc123",
-      "toPublicResults must preserve sessionId so the additive-compat promise holds");
+    assert.equal((out[0] as any).sessionId, undefined,
+      "toPublicResults must not emit the redundant sessionId field");
   });
 
-  it("omits sessionId when the underlying result has none (pi-only runs)", () => {
+  it("never synthesizes a sessionId on pi-only results", () => {
     const input: OrchestrationResult[] = [
       {
         name: "pi-step",
@@ -443,7 +442,6 @@ describe("toPublicResults", () => {
     ];
     const out = toPublicResults(input);
     assert.equal(out[0].sessionKey, "/tmp/sess.jsonl");
-    assert.equal(out[0].sessionId, undefined,
-      "non-Claude results should not synthesize a sessionId");
+    assert.equal((out[0] as any).sessionId, undefined);
   });
 });

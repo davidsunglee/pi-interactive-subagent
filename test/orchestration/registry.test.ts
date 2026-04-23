@@ -480,3 +480,115 @@ describe("createRegistry onResumeTerminal continuation gating", () => {
     assert.equal(continuationPayloads[0].resumedResult.finalMessage, "done");
   });
 });
+
+describe("createRegistry onResumeTerminal clears stale block-time usage/transcript (review-v5 finding 1)", () => {
+  // Rationale: the pre-lifecycle resume path runs in the pane backend, which
+  // does not populate `usage`/`transcript`. The headless backend freezes a
+  // point-in-time snapshot of those fields at block time. When the pane-based
+  // resume completes, merging the (usage-less) resume result over the
+  // blocked snapshot would leak the pre-block snapshot into the final payload
+  // — presenting partial telemetry as authoritative. The registry must drop
+  // those fields on resume terminal so the final payload reflects only what
+  // the resume leg actually produced (which, in v1, is none).
+  it("drops stale usage/transcript fields from the blocked snapshot when the resume result omits them", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    // Seed the blocked snapshot with headless-style accumulators — this
+    // mirrors the `partial` that runSerial passes through to onTaskBlocked
+    // from a headless backend's point-in-time usage/transcript.
+    reg.onTaskBlocked(id, 0, {
+      sessionKey: "sess-a",
+      message: "need input",
+      partial: {
+        name: "a",
+        index: 0,
+        state: "blocked",
+        sessionKey: "sess-a",
+        usage: {
+          input: 100, output: 50, cacheRead: 0, cacheWrite: 0,
+          cost: 0.01, contextTokens: 150, turns: 1,
+        },
+        transcript: [
+          { role: "user", content: [{ type: "text", text: "pre-block prompt" }] },
+        ],
+      },
+    });
+    // Guard: before resume, the blocked snapshot has usage/transcript.
+    const preResume = reg.getSnapshot(id)!.tasks[0];
+    assert.ok(preResume.usage, "pre-condition: blocked snapshot carries usage");
+    assert.ok(preResume.transcript, "pre-condition: blocked snapshot carries transcript");
+
+    // Resume terminal with no usage/transcript (pane backend in v1).
+    reg.onResumeTerminal("sess-a", {
+      name: "a",
+      index: 0,
+      state: "completed",
+      finalMessage: "resolved",
+      exitCode: 0,
+      elapsedMs: 5,
+      sessionKey: "sess-a",
+    });
+
+    const postResume = reg.getSnapshot(id)!.tasks[0];
+    assert.equal(postResume.state, "completed");
+    assert.equal(postResume.finalMessage, "resolved");
+    assert.equal(postResume.usage, undefined,
+      "resume terminal must drop the stale pre-block usage snapshot");
+    assert.equal(postResume.transcript, undefined,
+      "resume terminal must drop the stale pre-block transcript snapshot");
+    // And the emitted orchestration_complete payload must also lack stale fields.
+    const complete = emitted.find((e) => e.kind === "orchestration_complete");
+    assert.ok(complete);
+    assert.equal(complete.results[0].usage, undefined);
+    assert.equal(complete.results[0].transcript, undefined);
+  });
+
+  it("passes through usage/transcript when the resume result explicitly carries them (future backend parity)", () => {
+    // Guards against over-correction: if a future backend does provide usage
+    // on the resume leg, the registry must still surface it in the emitted
+    // completion payload. (The stored snapshot is stripped post-finalize for
+    // memory reasons; the emitted payload is the authoritative observer.)
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskBlocked(id, 0, {
+      sessionKey: "sess-a",
+      message: "?",
+      partial: {
+        name: "a",
+        index: 0,
+        state: "blocked",
+        sessionKey: "sess-a",
+        usage: {
+          input: 100, output: 50, cacheRead: 0, cacheWrite: 0,
+          cost: 0.01, contextTokens: 150, turns: 1,
+        },
+      },
+    });
+    const resumedUsage = {
+      input: 200, output: 120, cacheRead: 0, cacheWrite: 0,
+      cost: 0.05, contextTokens: 320, turns: 3,
+    };
+    reg.onResumeTerminal("sess-a", {
+      name: "a",
+      index: 0,
+      state: "completed",
+      finalMessage: "resolved",
+      exitCode: 0,
+      elapsedMs: 5,
+      sessionKey: "sess-a",
+      usage: resumedUsage,
+    });
+    const complete = emitted.find((e) => e.kind === "orchestration_complete");
+    assert.ok(complete);
+    assert.deepEqual(complete.results[0].usage, resumedUsage,
+      "when resume provides usage, it replaces the pre-block snapshot in the emitted payload");
+  });
+});

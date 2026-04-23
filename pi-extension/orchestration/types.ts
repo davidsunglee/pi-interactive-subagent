@@ -76,13 +76,6 @@ export interface OrchestratedTaskResult {
   elapsedMs?: number;
   exitCode?: number;
   sessionKey?: string;
-  /**
-   * Backward-compat: the Claude session id for Claude-backed children. For
-   * Claude results this equals `sessionKey`; for pi-backed children it is
-   * `undefined`. Kept alongside `sessionKey` so the sync result shape remains
-   * additive-only versus the pre-lifecycle payload (review-v3 spec-div #3).
-   */
-  sessionId?: string;
   error?: string;
   usage?: UsageStats;
   transcript?: TranscriptMessage[];
