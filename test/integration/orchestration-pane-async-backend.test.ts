@@ -9,6 +9,7 @@ import {
   createTestEnv,
   cleanupTestEnv,
   PI_TIMEOUT,
+  SLOW_LANE_OPT_IN,
   type TestEnv,
 } from "./harness.ts";
 import subagentsExtension, { __test__ as subagentsTest } from "../../pi-extension/subagents/index.ts";
@@ -18,10 +19,11 @@ const PI_AVAILABLE = (() => {
   try { execSync("which pi", { stdio: "pipe" }); return true; } catch { return false; }
 })();
 const backends = getAvailableBackends();
-const SHOULD_SKIP = !PI_AVAILABLE || backends.length === 0;
+// Real-backend suite: only runs under the slow lane opt-in.
+const SHOULD_SKIP = !PI_AVAILABLE || backends.length === 0 || !SLOW_LANE_OPT_IN;
 
 if (SHOULD_SKIP) {
-  console.log(`⚠️  orchestration-pane-async-backend skipped: PI=${PI_AVAILABLE} BACKENDS=${backends.length}`);
+  console.log(`⚠️  orchestration-pane-async-backend skipped: PI=${PI_AVAILABLE} BACKENDS=${backends.length} SLOW=${SLOW_LANE_OPT_IN}`);
 }
 
 function makeFakePi() {

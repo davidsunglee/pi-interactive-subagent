@@ -1,7 +1,7 @@
 # Orchestration Lifecycle Expansion — Design
 
 **Date:** 2026-04-22
-**Status:** Approved design, revised in v3 to reflect the implemented `subagent_resume` API surface
+**Status:** Approved design. Revised in v3 to reflect the implemented `subagent_resume` API surface. Amended 2026-04-23 to document the pi-CLI-only scope for Phase 2 initial-run block detection in v1 (see "Backend scope for Phase 2 block detection" below). End-to-end Claude-CLI block signaling is deferred to a follow-up (phase-2.5).
 **Combines todos:** P1 (`500159c1`), P4 (`79db3120`), P6 (`ab99a00b`)
 **Phasing:** Two phases. Phase 1 delivers P1. Phase 2 delivers P4 and P6 together (P6 collapses into P4 after the YAGNI pass described below).
 
@@ -227,6 +227,22 @@ Phase 2 delivers the user-visible capability of human-in-the-loop orchestration 
 
 Phase 2 activates only for `wait: false` orchestrations. In sync runs, today's behavior continues unchanged: `caller_ping` exits the child, the orchestration records the task as `completed` with the ping message as `finalMessage`. The parent's turn is architecturally unable to respond to a steer-back while its tool call is blocked, so forcing block-state semantics on sync runs would produce broken UX. Documented limitation; sync callers who need ping-aware orchestration migrate to `wait: false`.
 
+### Backend scope for Phase 2 block detection — pi-CLI only in v1
+
+Phase 2 initial-run block detection is scoped to pi-CLI children in v1. A Claude-CLI child (`cli: "claude"`) spawned inside an async orchestration runs to terminal and does *not* enter the `blocked` state from an initial run. Resume-awareness (the session-ownership map and re-ingestion via standalone `subagent_resume`) still applies to Claude children — a parent that obtains a Claude `sessionId` through any path can still resume and have the result routed back to the owning orchestration. It is only the Phase-2 initial-run `running → blocked` transition that is pi-only.
+
+**Why pi-only:** pi exposes `caller_ping` as a real MCP tool (via `pi-extension/subagents/subagent-done.ts`), and the pi headless runner and pane watcher both understand the tool's emission as a structured lifecycle event. The Claude CLI does not expose `caller_ping` — it lives in pi's extension surface. The bundled Claude Stop hook (`pi-extension/subagents/plugin/hooks/on-stop.sh`) therefore writes terminal-completion sentinels only. Implementing Claude-side initial-run block signaling would require a new protocol (MCP-registered `caller_ping` or a magic-string pattern on `last_assistant_message`), an updated Stop hook that parses it, a `BackendResult.ping` channel from the Claude headless runner, and completion-watcher propagation in the pane path. That is additive surface, not a correctness fix, and is deferred to phase-2.5.
+
+**What this means in practice:**
+- Pi children: `caller_ping` → `blocked` → `subagent_resume({ sessionPath })` → `running → terminal` works end-to-end on both headless and pane backends.
+- Claude children: run to terminal from the initial invocation. Humans-in-the-loop for Claude-backed orchestration is done by ending the task on ambiguity and letting the parent chain a follow-up resume in the next turn.
+
+**Authoritative reference for the shipped behavior:**
+- `pi-extension/subagents/backends/headless.ts` — `runClaudeHeadless()` never populates `BackendResult.ping`.
+- `pi-extension/subagents/index.ts` — pane-path Claude completion branch omits `ping` from its return shape.
+- `pi-extension/subagents/plugin/hooks/on-stop.sh` — emits terminal-completion sentinels only; does not distinguish `caller_ping`.
+- `README.md` "caller_ping inside async orchestration" — v1 limitations call out the pi-CLI-only scope.
+
 ### Session-ownership map
 
 New registry-level index:
@@ -241,7 +257,7 @@ Populated when each task launches — the key is known to the backend at that po
 
 ### Detecting a block
 
-The existing Claude Stop-hook plugin already emits structured sentinels distinguishing `subagent_done` from `caller_ping`. Extend the completion watcher in `pi-extension/subagents/` to surface the `caller_ping` case as a distinct event rather than folding it into normal completion. On receiving the event for a child whose `sessionKey` is in the ownership map, the registry transitions the task:
+The pi headless runner surfaces `caller_ping` through `BackendResult.ping`, and the pi pane watcher surfaces it as a distinct event by reading the `.exit` sidecar that pi writes when the child invokes `caller_ping`. The completion watcher in `pi-extension/subagents/` surfaces the ping case as a distinct event rather than folding it into normal completion. (Claude-CLI children are out of scope here — see "Backend scope for Phase 2 block detection" above.) On receiving the event for a child whose `sessionKey` is in the ownership map, the registry transitions the task:
 
 1. State `running → blocked`.
 2. Usage / transcript accumulators frozen at point-in-time (cumulative on eventual resume).
@@ -356,7 +372,7 @@ Steer-back notification kinds:
 ### Phase 2
 
 - **Unit:** ownership-map populate/clear on task lifecycle; `sessionKey` lookup routing to the right `(orchestrationId, taskIndex)`.
-- **Integration — single block/resume cycle:** serial run with `wait: false`, task 2 calls `caller_ping`, blocked steer-back fires, parent issues standalone `subagent_resume`, task 2 transitions `blocked → completed`, sequence continues to task 3, aggregated completion fires. Cover both resume-entry forms across backends: pi-backed via `sessionPath`, Claude-backed via `sessionId`.
+- **Integration — single block/resume cycle:** serial run with `wait: false`, task 2 calls `caller_ping`, blocked steer-back fires, parent issues standalone `subagent_resume`, task 2 transitions `blocked → completed`, sequence continues to task 3, aggregated completion fires. Covered for pi-backed children via `sessionPath` on both headless and pane backends (v1 scope). Claude-backed `sessionId` coverage is deferred to phase-2.5 alongside the Claude-side block-signaling protocol.
 - **Integration — parallel block:** one task blocks; siblings continue and reach terminal; aggregated completion waits for the resume; final notification includes mixed states ending all-terminal.
 - **Recursion:** resumed child pings again; transitions back to `blocked`; second resume completes the task; aggregated completion fires.
 - **Cancellation of blocked task:** `subagent_run_cancel` while a task is `blocked` transitions it to `cancelled` and emits aggregated completion.
@@ -394,3 +410,4 @@ Steer-back notification kinds:
 | Persistence | In-process only | v1; crash recovery not justified |
 | Tool naming | `subagent_run_{serial,parallel,cancel}` | Consistent family; `run` fits both serial and parallel shapes |
 | Backward compat on tool renames | None | Fork state allows a clean break; all in-repo callers migrated in Phase 1 |
+| Phase 2 backend scope | pi-CLI only in v1; Claude end-to-end deferred to phase-2.5 | Claude CLI does not expose `caller_ping`; wiring it requires a new protocol + hook + runner + watcher changes that don't belong in this gate. Session-ownership map + resume re-ingestion still work for Claude children; only the initial-run `running → blocked` transition is deferred |

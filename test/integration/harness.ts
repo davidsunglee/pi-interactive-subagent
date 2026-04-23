@@ -61,6 +61,24 @@ export const TEST_MODEL = process.env.PI_TEST_MODEL ?? "anthropic/claude-haiku-4
 /** Per-test timeout in ms. Override with PI_TEST_TIMEOUT env var. */
 export const PI_TIMEOUT = Number(process.env.PI_TEST_TIMEOUT ?? "120000");
 
+/**
+ * Per-event wait budget for async orchestration steer-back notifications
+ * (BLOCKED / ORCHESTRATION_COMPLETE). Tighter than PI_TIMEOUT because these
+ * events should fire quickly once the child process is live — a single event
+ * timing out on this budget is a real signal, not a sluggish CI signal.
+ * Override with PI_BLOCK_WAIT_MS env var.
+ */
+export const BLOCK_WAIT_MS = Number(process.env.PI_BLOCK_WAIT_MS ?? "90000");
+
+/**
+ * Slow-lane opt-in flag. Real-backend orchestration tests (those that spawn
+ * actual pi children or mux surfaces over multi-minute wall times) check this
+ * and self-skip unless PI_RUN_SLOW=1 is set. The `npm run test:integration`
+ * script leaves this unset so the default integration gate stays snappy;
+ * `npm run test:integration:slow` sets it to run the heavy suites explicitly.
+ */
+export const SLOW_LANE_OPT_IN = process.env.PI_RUN_SLOW === "1";
+
 // ── Backend detection ──
 
 /**
@@ -294,4 +312,72 @@ export function uniqueId(): string {
  */
 export function trackTempFile(env: TestEnv, path: string): void {
   env.tempFiles.push(path);
+}
+
+// ── Shared helpers for async/block integration tests ──
+
+export type SentMessage = { message: any; opts?: any };
+
+/**
+ * Poll `sentMessages` for a message with `customType === customType`. Returns
+ * the matched record or null on timeout. Kept intentionally side-effect-free
+ * so callers can dump diagnostics and perform their own cleanup when null.
+ */
+export async function waitForSentMessage(
+  sentMessages: SentMessage[],
+  customType: string,
+  timeoutMs: number,
+): Promise<SentMessage | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = sentMessages.find((m) => m.message?.customType === customType);
+    if (found) return found;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
+}
+
+/**
+ * Format a compact summary of sentMessages for diagnostics on wait-for-message
+ * timeouts. Capped at 20 rows so assertion failure output stays readable.
+ */
+export function summarizeSentMessages(
+  sentMessages: SentMessage[],
+  limit: number = 20,
+): string {
+  if (sentMessages.length === 0) return "(no messages sent)";
+  const rows = sentMessages.slice(-limit).map((m, i) => {
+    const idx = sentMessages.length - Math.min(limit, sentMessages.length) + i;
+    const kind = m.message?.customType ?? m.message?.role ?? "<no-customType>";
+    const oid = m.message?.details?.orchestrationId;
+    const tIdx = m.message?.details?.taskIndex;
+    const extras: string[] = [];
+    if (oid) extras.push(`oid=${oid}`);
+    if (tIdx !== undefined) extras.push(`taskIndex=${tIdx}`);
+    if (m.opts?.deliverAs) extras.push(`deliverAs=${m.opts.deliverAs}`);
+    return `  [${idx}] ${kind}${extras.length ? " " + extras.join(" ") : ""}`;
+  });
+  return `${sentMessages.length} total; last ${rows.length}:\n${rows.join("\n")}`;
+}
+
+/**
+ * Best-effort cancel for a dispatched orchestration. Intended for finally
+ * blocks so a wait-for-message timeout doesn't leave live children stranded
+ * across tests. Swallows errors; safe to call with an unknown id.
+ */
+export async function tryCancelOrchestration(
+  cancelTool: { execute: (...args: any[]) => Promise<any> } | undefined,
+  orchestrationId: string | undefined,
+  ctx: any,
+): Promise<void> {
+  if (!cancelTool || !orchestrationId) return;
+  try {
+    await cancelTool.execute(
+      "teardown-cancel",
+      { orchestrationId },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
+  } catch {}
 }

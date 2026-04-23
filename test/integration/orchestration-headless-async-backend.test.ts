@@ -4,13 +4,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import { copyTestAgents, PI_TIMEOUT } from "./harness.ts";
+import { copyTestAgents, PI_TIMEOUT, SLOW_LANE_OPT_IN } from "./harness.ts";
 import subagentsExtension, { __test__ as subagentsTest } from "../../pi-extension/subagents/index.ts";
 import { ORCHESTRATION_COMPLETE_KIND } from "../../pi-extension/orchestration/notification-kinds.ts";
 
 const PI_AVAILABLE = (() => {
   try { execSync("which pi", { stdio: "pipe" }); return true; } catch { return false; }
 })();
+// Real-backend suite: only runs under the slow lane opt-in.
+const SHOULD_SKIP = !PI_AVAILABLE || !SLOW_LANE_OPT_IN;
 
 if (!PI_AVAILABLE) {
   console.log("⚠️  orchestration-headless-async-backend skipped: pi not on PATH");
@@ -46,7 +48,7 @@ async function waitForCompletion(
 }
 
 describe("orchestration-headless-async-backend", {
-  skip: !PI_AVAILABLE, timeout: PI_TIMEOUT * 3,
+  skip: SHOULD_SKIP, timeout: PI_TIMEOUT * 3,
 }, () => {
   let prevMode: string | undefined;
   let dir: string;

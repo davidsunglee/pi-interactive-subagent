@@ -10,6 +10,14 @@
 // tmux hangs. This is a host-specific constraint; the test CODE is correct.
 // Run cmux-only via:
 //   PI_SUBAGENT_MUX=cmux node --test --test-timeout=120000 test/integration/orchestration-pane-block-backend.test.ts
+//
+// Budgets: per-event waits use BLOCK_WAIT_MS (default 90s) — tighter than
+// PI_TIMEOUT so a stuck ping/resume surfaces a signal within ~3 minutes of
+// suite wall-time rather than hogging a full PI_TIMEOUT*3 budget. On wait
+// timeout, the test dumps recent sentMessages for diagnostics and calls
+// subagent_run_cancel in a finally so the registry doesn't keep orphaned
+// panes/processes across tests. Lives in the slow integration lane
+// (`npm run test:integration:slow`) — not part of the default gate.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -17,7 +25,10 @@ import { join } from "node:path";
 import { execSync } from "node:child_process";
 import {
   getAvailableBackends, setBackend, restoreBackend,
-  createTestEnv, cleanupTestEnv, PI_TIMEOUT, type TestEnv,
+  createTestEnv, cleanupTestEnv,
+  BLOCK_WAIT_MS, PI_TIMEOUT, SLOW_LANE_OPT_IN,
+  waitForSentMessage, summarizeSentMessages, tryCancelOrchestration,
+  type TestEnv,
 } from "./harness.ts";
 import subagentsExtension, { __test__ as subagentsTest } from "../../pi-extension/subagents/index.ts";
 import {
@@ -28,7 +39,8 @@ const PI_AVAILABLE = (() => {
   try { execSync("which pi", { stdio: "pipe" }); return true; } catch { return false; }
 })();
 const backends = getAvailableBackends();
-const SHOULD_SKIP = !PI_AVAILABLE || backends.length === 0;
+// Skip unless the slow lane is opted into (real-backend suite).
+const SHOULD_SKIP = !PI_AVAILABLE || backends.length === 0 || !SLOW_LANE_OPT_IN;
 
 function makeFakePi() {
   const tools = new Map<string, any>();
@@ -46,23 +58,9 @@ function makeFakePi() {
   };
 }
 
-async function waitForMessage(
-  sentMessages: Array<{ message: any; opts?: any }>,
-  customType: string,
-  timeoutMs: number,
-): Promise<{ message: any; opts?: any } | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const found = sentMessages.find((m) => m.message?.customType === customType);
-    if (found) return found;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return null;
-}
-
 for (const backend of backends) {
   describe(`orchestration-pane-block-backend [${backend}]`, {
-    skip: SHOULD_SKIP, timeout: PI_TIMEOUT * 3,
+    skip: SHOULD_SKIP, timeout: PI_TIMEOUT * 2,
   }, () => {
     let prevMux: string | undefined;
     let env: TestEnv;
@@ -82,7 +80,8 @@ for (const backend of backends) {
       subagentsExtension(fake.api as any);
       const serial = fake.tools.get("subagent_run_serial");
       const resume = fake.tools.get("subagent_resume");
-      assert.ok(serial && resume);
+      const cancelTool = fake.tools.get("subagent_run_cancel");
+      assert.ok(serial && resume && cancelTool);
 
       const sessionFile = join(env.dir, "session.jsonl");
       const ctx = {
@@ -94,32 +93,52 @@ for (const backend of backends) {
         cwd: env.dir,
       };
 
-      const envelope = await serial.execute(
-        "pane-block",
-        { wait: false, tasks: [{ name: "r1", agent: "test-ping-resumable", task: "hello" }] },
-        new AbortController().signal,
-        () => {},
-        ctx,
-      );
-      assert.ok(envelope.details.orchestrationId);
+      let orchestrationId: string | undefined;
+      try {
+        const envelope = await serial.execute(
+          "pane-block",
+          { wait: false, tasks: [{ name: "r1", agent: "test-ping-resumable", task: "hello" }] },
+          new AbortController().signal,
+          () => {},
+          ctx,
+        );
+        orchestrationId = envelope.details.orchestrationId;
+        assert.ok(orchestrationId);
 
-      const blocked = await waitForMessage(fake.sentMessages, BLOCKED_KIND, PI_TIMEOUT * 2);
-      assert.ok(blocked, "expected BLOCKED sendMessage");
-      const sessionKey = blocked!.message.details.sessionKey;
-      assert.ok(existsSync(sessionKey), `sessionKey path must exist on disk: ${sessionKey}`);
-      assert.match(blocked!.message.details.message, /^PING:/);
+        const blocked = await waitForSentMessage(fake.sentMessages, BLOCKED_KIND, BLOCK_WAIT_MS);
+        if (!blocked) {
+          assert.fail(
+            `expected BLOCKED sendMessage within ${BLOCK_WAIT_MS}ms ` +
+            `(orchestrationId=${orchestrationId}, backend=${backend}). ` +
+            `Sent messages: ${summarizeSentMessages(fake.sentMessages)}`,
+          );
+        }
+        const sessionKey = blocked!.message.details.sessionKey;
+        assert.ok(existsSync(sessionKey), `sessionKey path must exist on disk: ${sessionKey}`);
+        assert.match(blocked!.message.details.message, /^PING:/);
 
-      await resume.execute(
-        "pane-resume",
-        { sessionPath: sessionKey, message: "please finish" },
-        new AbortController().signal,
-        () => {},
-        ctx,
-      );
+        await resume.execute(
+          "pane-resume",
+          { sessionPath: sessionKey, message: "please finish" },
+          new AbortController().signal,
+          () => {},
+          ctx,
+        );
 
-      const complete = await waitForMessage(fake.sentMessages, ORCHESTRATION_COMPLETE_KIND, PI_TIMEOUT * 2);
-      assert.ok(complete, "expected orchestration_complete after resume");
-      assert.equal(complete!.message.details.results[0].state, "completed");
+        const complete = await waitForSentMessage(fake.sentMessages, ORCHESTRATION_COMPLETE_KIND, BLOCK_WAIT_MS);
+        if (!complete) {
+          assert.fail(
+            `expected orchestration_complete within ${BLOCK_WAIT_MS}ms after resume ` +
+            `(orchestrationId=${orchestrationId}, sessionKey=${sessionKey}, backend=${backend}). ` +
+            `Sent messages: ${summarizeSentMessages(fake.sentMessages)}`,
+          );
+        }
+        assert.equal(complete!.message.details.results[0].state, "completed");
+      } finally {
+        // Deterministic teardown: cancel on any path (pass or fail) so a stuck
+        // test doesn't leave the registry holding live panes.
+        await tryCancelOrchestration(cancelTool, orchestrationId, ctx);
+      }
     });
   });
 }
