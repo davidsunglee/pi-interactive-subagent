@@ -478,6 +478,8 @@ export const __test__ = {
   resetRegistry() { registry = createRegistry(registryEmitter as any, registryHooks); },
   setMuxAvailableOverride(value: boolean | null) { muxAvailableOverride = value; },
   getMuxAvailableOverride(): boolean | null { return muxAvailableOverride; },
+  setSurfaceOverrides(overrides: typeof surfaceOverrides) { surfaceOverrides = overrides; },
+  getSurfaceOverrides() { return surfaceOverrides; },
 };
 
 function startWidgetRefresh() {
@@ -486,6 +488,10 @@ function startWidgetRefresh() {
   widgetInterval = setInterval(() => {
     updateWidget();
   }, 1000);
+  // Detach from the event loop's keep-alive count — a purely cosmetic widget
+  // must not prevent the host process (or the test runner) from exiting once
+  // real work is done.
+  widgetInterval.unref?.();
   (globalThis as any)[WIDGET_INTERVAL_KEY] = widgetInterval;
 }
 
@@ -1044,6 +1050,14 @@ let watchSubagentOverride: typeof watchSubagent | null = null;
 // runners). null = honor the real probe (production default).
 let muxAvailableOverride: boolean | null = null;
 
+// Test seam: Task 12.2a / Step 14.2d (__test__.setSurfaceOverrides). Stubs
+// createSurface + sendLongCommand so boundary tests skip real mux-pane
+// construction. null = production default.
+let surfaceOverrides: {
+  createSurface?: (name: string) => string;
+  sendLongCommand?: (surface: string, command: string) => void;
+} | null = null;
+
 // Module-scope forward-declared so the registry can be reset via __test__.
 // `piForRegistry` is the ExtensionAPI assigned when subagentsExtension runs;
 // the emitter reads through it so a test that swaps the pi handle sees it.
@@ -1487,15 +1501,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         "Results are delivered later via a steer message. Do NOT fabricate or assume results. " +
         "Use when a sub-agent was cancelled or needs follow-up work.",
       parameters: Type.Object({
-        sessionPath: Type.String({ description: "Path to the session .jsonl file to resume" }),
-        name: Type.Optional(
-          Type.String({ description: "Display name for the terminal tab. Default: 'Resume'" }),
-        ),
-        message: Type.Optional(
-          Type.String({
-            description: "Optional message to send after resuming (e.g. follow-up instructions)",
-          }),
-        ),
+        sessionPath: Type.Optional(Type.String({
+          description: "Path to the pi-backed subagent session file. Mutually exclusive with sessionId.",
+        })),
+        sessionId: Type.Optional(Type.String({
+          description: "Claude session id for a Claude-backed subagent. Mutually exclusive with sessionPath.",
+        })),
+        name: Type.Optional(Type.String({ description: "Display name. Default: 'Resume'" })),
+        message: Type.Optional(Type.String({ description: "Follow-up prompt to deliver." })),
       }),
 
       renderCall(args, theme) {
@@ -1530,103 +1543,142 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const name = params.name ?? "Resume";
         const startTime = Date.now();
 
-        // Test seam: Task 7b (__test__.setMuxAvailableOverride).
+        // 1. XOR validation — must precede mux gate and existsSync gate.
+        if (!!params.sessionPath === !!params.sessionId) {
+          return {
+            content: [{ type: "text", text: "subagent_resume: provide exactly one of sessionPath or sessionId." }],
+            details: { error: "invalid parameters: sessionPath/sessionId XOR" },
+            isError: true,
+          };
+        }
+        const sessionKey = params.sessionPath ?? params.sessionId!;
+
+        // 2. Mux gate (test seam).
         const muxAvailable = muxAvailableOverride ?? isMuxAvailable();
         if (!muxAvailable) {
           return muxUnavailableResult();
         }
 
-        if (!existsSync(params.sessionPath)) {
-          return {
-            content: [
-              { type: "text", text: `Error: session file not found: ${params.sessionPath}` },
-            ],
-            details: { error: "session not found" },
-          };
+        // 3. sessionPath branch: existsSync gate + pi resume.
+        //    sessionId branch: Claude resume via buildClaudeCmdParts.
+        const isPiResume = !!params.sessionPath;
+        let entryCountBefore = 0;
+        let sentinelFile: string | undefined;
+
+        if (isPiResume) {
+          if (!existsSync(params.sessionPath!)) {
+            return {
+              content: [{ type: "text", text: `Error: session file not found: ${params.sessionPath}` }],
+              details: { error: "session not found" },
+            };
+          }
+          entryCountBefore = getNewEntries(params.sessionPath!, 0).length;
         }
 
-        // Record entry count before resuming so we can extract new messages
-        const entryCountBefore = getNewEntries(params.sessionPath, 0).length;
-
-        const surface = createSurface(name);
+        // 4. Create surface.
+        const id = Math.random().toString(16).slice(2, 10);
+        const surface = surfaceOverrides?.createSurface
+          ? surfaceOverrides.createSurface(name)
+          : createSurface(name);
         await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
-
-        // Build pi resume command
-        const parts = ["pi", "--session", shellEscape(params.sessionPath)];
-
-        // Load subagent-done extension so the agent can self-terminate if needed
-        const subagentDonePath = join(
-          dirname(new URL(import.meta.url).pathname),
-          "subagent-done.ts",
-        );
-        parts.push("-e", shellEscape(subagentDonePath));
 
         const sessionId = ctx.sessionManager.getSessionId();
         const artifactDir = getArtifactDir(ctx.sessionManager.getSessionDir(), sessionId);
 
+        // 5. Build command per branch.
+        let command: string;
+        let launchScriptFile: string;
         let resumeMsgFile: string | undefined;
-        if (params.message) {
-          const msgTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-          resumeMsgFile = join(
-            artifactDir,
-            "subagent-resume",
-            `${name
-              .toLowerCase()
-              .replace(/[^a-z0-9\s-]/g, "")
-              .replace(/\s+/g, "-")
-              .replace(/-+/g, "-")
-              .replace(/^-|-$/g, "") || "resume"}-${msgTimestamp}.md`,
+
+        if (isPiResume) {
+          // --- pi sessionPath branch (existing logic, preserved) ---
+          const parts = ["pi", "--session", shellEscape(params.sessionPath!)];
+          const subagentDonePath = join(dirname(new URL(import.meta.url).pathname), "subagent-done.ts");
+          parts.push("-e", shellEscape(subagentDonePath));
+
+          if (params.message) {
+            const msgTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+            resumeMsgFile = join(
+              artifactDir, "subagent-resume",
+              `${name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "resume"}-${msgTimestamp}.md`,
+            );
+            mkdirSync(dirname(resumeMsgFile), { recursive: true });
+            writeFileSync(resumeMsgFile, params.message, "utf8");
+            parts.push(shellEscape(`@${resumeMsgFile}`));
+          }
+
+          const resumeEnvParts: string[] = [];
+          if (process.env.PI_CODING_AGENT_DIR) {
+            resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
+          }
+          const resumeEnvPrefix = resumeEnvParts.length > 0 ? resumeEnvParts.join(" ") + " " : "";
+          command = `${resumeEnvPrefix}${parts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
+          launchScriptFile = join(
+            artifactDir, "subagent-scripts",
+            `${name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "resume"}-resume-${Date.now()}.sh`,
           );
-          mkdirSync(dirname(resumeMsgFile), { recursive: true });
-          writeFileSync(resumeMsgFile, params.message, "utf8");
-          parts.push(shellEscape(`@${resumeMsgFile}`));
+        } else {
+          // --- Claude sessionId branch (NEW, mirrors launchSubagent Claude path) ---
+          // v1 gap: if the Claude child rotates its session id after resume, ownership
+          // should update via updateSessionKey — not implemented in v1.
+          sentinelFile = `/tmp/pi-claude-${id}-done`;
+          const pluginDir = join(dirname(new URL(import.meta.url).pathname), "plugin");
+          const pluginDirResolved = existsSync(pluginDir) ? pluginDir : undefined;
+          const cmdParts = buildClaudeCmdParts({
+            sentinelFile,
+            pluginDir: pluginDirResolved,
+            model: undefined,
+            identity: undefined,
+            systemPromptMode: undefined,
+            resumeSessionId: params.sessionId!,
+            effectiveThinking: undefined,
+            effectiveTools: undefined,
+            task: params.message ?? "",
+          });
+          command = `${cmdParts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
+          launchScriptFile = join(
+            artifactDir, "subagent-scripts",
+            `${name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "resume"}-claude-resume-${Date.now()}.sh`,
+          );
         }
 
-        // Build env prefix — propagate PI_CODING_AGENT_DIR for config isolation
-        const resumeEnvParts: string[] = [];
-        if (process.env.PI_CODING_AGENT_DIR) {
-          resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
+        // 6. Dispatch.
+        if (surfaceOverrides?.sendLongCommand) {
+          surfaceOverrides.sendLongCommand(surface, command);
+        } else {
+          sendLongCommand(surface, command, {
+            scriptPath: launchScriptFile,
+            scriptPreamble: [
+              `# Subagent resume script for ${name}`,
+              `# Generated: ${new Date().toISOString()}`,
+              isPiResume
+                ? `# Session path: ${params.sessionPath}`
+                : `# Claude session id: ${params.sessionId}`,
+              `# Surface: ${surface}`,
+              ...(resumeMsgFile ? [`# Resume message file: ${resumeMsgFile}`] : []),
+            ].join("\n"),
+          });
         }
-        const resumeEnvPrefix = resumeEnvParts.length > 0 ? resumeEnvParts.join(" ") + " " : "";
 
-        const command = `${resumeEnvPrefix}${parts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
-        const launchScriptFile = join(
-          artifactDir,
-          "subagent-scripts",
-          `${name
-            .toLowerCase()
-            .replace(/[^a-z0-9\s-]/g, "")
-            .replace(/\s+/g, "-")
-            .replace(/-+/g, "-")
-            .replace(/^-|-$/g, "") || "resume"}-resume-${Date.now()}.sh`,
-        );
-        sendLongCommand(surface, command, {
-          scriptPath: launchScriptFile,
-          scriptPreamble: [
-            `# Subagent resume script for ${name}`,
-            `# Generated: ${new Date().toISOString()}`,
-            `# Session: ${params.sessionPath}`,
-            `# Surface: ${surface}`,
-            ...(resumeMsgFile ? [`# Resume message file: ${resumeMsgFile}`] : []),
-          ].join("\n"),
-        });
-
-        // Register as a running subagent for widget tracking
-        const id = Math.random().toString(16).slice(2, 10);
+        // 7. Register RunningSubagent.
         const running: RunningSubagent = {
           id,
           name,
-          task: params.message ?? "resumed session",
+          task: params.message ?? (isPiResume ? "resumed session" : "resumed Claude session"),
           backend: "pane",
           surface,
           startTime,
-          sessionFile: params.sessionPath,
+          sessionFile: isPiResume ? params.sessionPath! : "",
           launchScriptFile,
+          ...(isPiResume ? {} : { cli: "claude" as const, sentinelFile }),
         };
         runningSubagents.set(id, running);
         startWidgetRefresh();
 
-        // Fire-and-forget watcher
+        // 8. Resume-start lifecycle transition for owned slots.
+        registry.onResumeStarted(sessionKey);
+
+        // 9. Fire-and-forget watcher.
         const watcherAbort = new AbortController();
         running.abortController = watcherAbort;
 
@@ -1635,9 +1687,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         watcher(running, watcherAbort.signal)
           .then((result) => {
             updateWidget();
+            const owner = registry.lookupOwner(sessionKey);
 
             if (result.ping) {
-              const sessionRef = `\n\nSession: ${params.sessionPath}\nResume: pi --session ${params.sessionPath}`;
+              // Standalone subagent_ping steer-back (unchanged).
+              const sessionRef = isPiResume
+                ? `\n\nSession: ${params.sessionPath}\nResume: pi --session ${params.sessionPath}`
+                : `\n\nClaude session: ${params.sessionId}`;
               pi.sendMessage(
                 {
                   customType: "subagent_ping",
@@ -1646,21 +1702,34 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   details: {
                     name: result.ping.name,
                     message: result.ping.message,
-                    sessionFile: params.sessionPath,
+                    sessionFile: isPiResume ? params.sessionPath : undefined,
+                    sessionId: isPiResume ? undefined : params.sessionId,
                   },
                 },
                 { triggerTurn: true, deliverAs: "steer" },
               );
+              // NEW: if orch-owned, re-block the owning slot.
+              if (owner) {
+                registry.onTaskBlocked(owner.orchestrationId, owner.taskIndex, {
+                  sessionKey,
+                  message: result.ping.message,
+                });
+              }
               return;
             }
 
-            const allEntries = getNewEntries(params.sessionPath, entryCountBefore);
-            const summary =
-              findLastAssistantMessage(allEntries) ??
-              (result.exitCode !== 0
-                ? `Resumed session exited with code ${result.exitCode}`
-                : "Resumed session exited without new output");
-            const sessionRef = `\n\nSession: ${params.sessionPath}\nResume: pi --session ${params.sessionPath}`;
+            // Terminal path: emit standalone subagent_result, then maybe re-ingest.
+            const summary = isPiResume
+              ? (findLastAssistantMessage(getNewEntries(params.sessionPath!, entryCountBefore))
+                  ?? (result.exitCode !== 0
+                    ? `Resumed session exited with code ${result.exitCode}`
+                    : "Resumed session exited without new output"))
+              : (result.summary ?? (result.exitCode !== 0
+                  ? `Resumed Claude session exited with code ${result.exitCode}`
+                  : "Resumed Claude session exited"));
+            const sessionRef = isPiResume
+              ? `\n\nSession: ${params.sessionPath}\nResume: pi --session ${params.sessionPath}`
+              : `\n\nClaude session: ${params.sessionId}`;
 
             pi.sendMessage(
               {
@@ -1669,14 +1738,32 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                 display: true,
                 details: {
                   name,
-                  task: params.message ?? "resumed session",
+                  task: params.message ?? (isPiResume ? "resumed session" : "resumed Claude session"),
                   exitCode: result.exitCode,
                   elapsed: result.elapsed,
-                  sessionFile: params.sessionPath,
+                  sessionFile: isPiResume ? params.sessionPath : undefined,
+                  sessionId: isPiResume ? undefined : params.sessionId,
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },
             );
+
+            // NEW: if orch-owned, re-ingest the terminal result.
+            if (owner) {
+              const snap = registry.getSnapshot(owner.orchestrationId);
+              const taskName = snap?.tasks[owner.taskIndex].name ?? `task-${owner.taskIndex + 1}`;
+              registry.onResumeTerminal(sessionKey, {
+                name: taskName,
+                index: owner.taskIndex,
+                state: result.exitCode === 0 && !result.error ? "completed" : "failed",
+                finalMessage: summary,
+                transcriptPath: null,
+                elapsedMs: result.elapsed * 1000,
+                exitCode: result.exitCode,
+                sessionKey,
+                error: result.error,
+              });
+            }
           })
           .catch((err) => {
             updateWidget();
@@ -1697,6 +1784,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             id,
             name,
             sessionPath: params.sessionPath,
+            sessionId: params.sessionId,
             launchScriptFile,
             status: "started",
           },

@@ -5,6 +5,7 @@ import { createRegistry } from "../../pi-extension/orchestration/registry.ts";
 import { ORCHESTRATION_COMPLETE_KIND } from "../../pi-extension/orchestration/notification-kinds.ts";
 import type { LauncherDeps } from "../../pi-extension/orchestration/types.ts";
 
+
 function makeApi() {
   const tools: any[] = []; const messages: any[] = [];
   return {
@@ -56,5 +57,44 @@ describe("end-to-end async orchestration", () => {
     assert.equal(details.results.length, 2);
     assert.deepEqual(details.results.map((r: any) => r.state), ["completed", "completed"]);
     assert.deepEqual(details.results.map((r: any) => r.finalMessage), ["result-a", "result-b"]);
+  });
+});
+
+describe("subagent_resume re-ingestion into owning orchestration", () => {
+  it("when standalone subagent_resume completes on an orch-owned session, the registry receives onResumeTerminal", async () => {
+    const ownedKey = "/tmp/orch-owned.jsonl";
+    const registry = createRegistry(() => {});
+    const id = registry.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    registry.onTaskLaunched(id, 0, { sessionKey: ownedKey });
+    registry.onTaskBlocked(id, 0, { sessionKey: ownedKey, message: "?" });
+    assert.equal(registry.lookupOwner(ownedKey)!.orchestrationId, id);
+    registry.onResumeTerminal(ownedKey, {
+      name: "a", index: 0, state: "completed", finalMessage: "resolved",
+      exitCode: 0, elapsedMs: 5, sessionKey: ownedKey,
+    });
+    const snap = registry.getSnapshot(id);
+    assert.equal(snap!.tasks[0].state, "completed");
+    assert.equal(snap!.tasks[0].finalMessage, "resolved");
+  });
+
+  it("Claude-backed re-ingestion: sessionId-keyed ownership routes the resume result back to the owning orchestration", async () => {
+    const claudeId = "claude-sess-abc123";
+    const registry = createRegistry(() => {});
+    const id = registry.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    registry.onTaskLaunched(id, 0, {});
+    registry.updateSessionKey(id, 0, claudeId);
+    registry.onTaskBlocked(id, 0, { sessionKey: claudeId, message: "?" });
+    assert.equal(registry.lookupOwner(claudeId)!.orchestrationId, id);
+    registry.onResumeTerminal(claudeId, {
+      name: "a", index: 0, state: "completed", finalMessage: "claude-resolved",
+      exitCode: 0, elapsedMs: 5, sessionKey: claudeId,
+    });
+    const snap = registry.getSnapshot(id);
+    assert.equal(snap!.tasks[0].state, "completed");
+    assert.equal(snap!.tasks[0].finalMessage, "claude-resolved");
   });
 });
