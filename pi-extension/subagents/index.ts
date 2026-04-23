@@ -34,6 +34,7 @@ import { registerOrchestrationTools } from "../orchestration/tool-handlers.ts";
 import { makeDefaultDeps } from "../orchestration/default-deps.ts";
 import { preflightOrchestration } from "./preflight-orchestration.ts";
 import { createRegistry, type Registry } from "../orchestration/registry.ts";
+import { type LauncherDeps } from "../orchestration/types.ts";
 import {
   ORCHESTRATION_COMPLETE_KIND,
   BLOCKED_KIND,
@@ -468,6 +469,15 @@ export const __test__ = {
   resolveEffectiveSessionMode,
   resolveLaunchBehavior,
   buildPiPromptArgs,
+  // Task 7b additions:
+  setLauncherDepsOverride(deps: LauncherDeps | null) { launcherDepsOverride = deps; },
+  getLauncherDepsOverride(): LauncherDeps | null { return launcherDepsOverride; },
+  setWatchSubagentOverride(fn: typeof watchSubagent | null) { watchSubagentOverride = fn; },
+  getWatchSubagentOverride(): typeof watchSubagent | null { return watchSubagentOverride; },
+  getRegistry(): Registry { return registry; },
+  resetRegistry() { registry = createRegistry(registryEmitter as any, registryHooks); },
+  setMuxAvailableOverride(value: boolean | null) { muxAvailableOverride = value; },
+  getMuxAvailableOverride(): boolean | null { return muxAvailableOverride; },
 };
 
 function startWidgetRefresh() {
@@ -979,7 +989,81 @@ export async function watchSubagent(
   }
 }
 
+// ── Task 7b: Module-scope seam state ──────────────────────────────────────────
+
+// Test seam: Task 7b (__test__.setLauncherDepsOverride). Lets real-extension
+// tests swap in deterministic fakes for LauncherDeps without mocking the
+// tool registrar. null = production default (makeDefaultDeps).
+let launcherDepsOverride: LauncherDeps | null = null;
+
+// Test seam: Task 7b (__test__.setWatchSubagentOverride). Applies ONLY to the
+// watchSubagent call inside subagent_resume.execute so Task 12/14 resume-
+// routing tests can drive ping-during-resume and terminal-resume outcomes
+// through the real handler. Does NOT apply to the bare `subagent` tool's
+// watch site — that remains the raw watchSubagent to keep its tests simple.
+let watchSubagentOverride: typeof watchSubagent | null = null;
+
+// Test seam: Task 7b (__test__.setMuxAvailableOverride). Bypasses the
+// isMuxAvailable() short-circuit inside subagent_resume.execute so boundary
+// tests can exercise the registry-routing branches on no-mux hosts (CI
+// runners). null = honor the real probe (production default).
+let muxAvailableOverride: boolean | null = null;
+
+// Module-scope forward-declared so the registry can be reset via __test__.
+// `piForRegistry` is the ExtensionAPI assigned when subagentsExtension runs;
+// the emitter reads through it so a test that swaps the pi handle sees it.
+let piForRegistry: ExtensionAPI | null = null;
+
+// Hoisted so resetRegistry() can reconstruct the same wiring.
+const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
+  if (!piForRegistry) return;
+  if (payload.kind === ORCHESTRATION_COMPLETE_KIND) {
+    piForRegistry.sendMessage({
+      customType: "orchestration_complete",
+      content:
+        `Orchestration "${payload.orchestrationId}" completed ` +
+        `(${payload.results.length} task(s), isError=${payload.isError}).`,
+      display: true,
+      details: payload,
+    }, { triggerTurn: true, deliverAs: "steer" });
+  } else if (payload.kind === BLOCKED_KIND) {
+    piForRegistry.sendMessage({
+      customType: BLOCKED_KIND,
+      content:
+        `Task "${payload.taskName}" in orchestration "${payload.orchestrationId}" is blocked:\n\n${payload.message}`,
+      display: true,
+      details: payload,
+    }, { triggerTurn: true, deliverAs: "steer" });
+  }
+};
+
+// Task 13 fills these bodies with virtual-widget cleanup. Phase 1 leaves them no-op.
+function onOrchestrationTaskTerminal(_orchestrationId: string, _taskIndex: number): void {
+  // no-op (Task 13)
+}
+function onOrchestrationResumeStarted(_orchestrationId: string, _taskIndex: number): void {
+  // no-op (Task 13)
+}
+
+const registryHooks = {
+  onTaskTerminal: ({ orchestrationId, taskIndex }: { orchestrationId: string; taskIndex: number }) => {
+    onOrchestrationTaskTerminal(orchestrationId, taskIndex);
+  },
+  onResumeStarted: ({ orchestrationId, taskIndex }: { orchestrationId: string; taskIndex: number }) => {
+    onOrchestrationResumeStarted(orchestrationId, taskIndex);
+  },
+};
+
+// registry is `let` so resetRegistry() can reassign. Constructed once at module
+// load; resetRegistry() creates a new instance sharing the same emitter contract.
+let registry: Registry = createRegistry(registryEmitter as any, registryHooks);
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function subagentsExtension(pi: ExtensionAPI) {
+  // Bind the pi handle for the module-scope registry emitter (Task 7b).
+  piForRegistry = pi;
+
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
@@ -1411,7 +1495,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const name = params.name ?? "Resume";
         const startTime = Date.now();
 
-        if (!isMuxAvailable()) {
+        // Test seam: Task 7b (__test__.setMuxAvailableOverride).
+        const muxAvailable = muxAvailableOverride ?? isMuxAvailable();
+        if (!muxAvailable) {
           return muxUnavailableResult();
         }
 
@@ -1509,7 +1595,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const watcherAbort = new AbortController();
         running.abortController = watcherAbort;
 
-        watchSubagent(running, watcherAbort.signal)
+        // Test seam: Task 7b (__test__.setWatchSubagentOverride).
+        const watcher = watchSubagentOverride ?? watchSubagent;
+        watcher(running, watcherAbort.signal)
           .then((result) => {
             updateWidget();
 
@@ -1767,48 +1855,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   // (v5 review finding #1 — no silent bypass of the existing runtime
   // invariant).
 
-  // Task 13 fills these bodies with virtual-widget cleanup. Phase 1 leaves them no-op.
-  function onOrchestrationTaskTerminal(_orchestrationId: string, _taskIndex: number): void {
-    // no-op (Task 13)
-  }
-  function onOrchestrationResumeStarted(_orchestrationId: string, _taskIndex: number): void {
-    // no-op (Task 13)
-  }
-
-  const registry: Registry = createRegistry(
-    (payload) => {
-      if (payload.kind === ORCHESTRATION_COMPLETE_KIND) {
-        pi.sendMessage({
-          customType: "orchestration_complete",
-          content:
-            `Orchestration "${payload.orchestrationId}" completed ` +
-            `(${payload.results.length} task(s), isError=${payload.isError}).`,
-          display: true,
-          details: payload,
-        }, { triggerTurn: true, deliverAs: "steer" });
-      } else if (payload.kind === BLOCKED_KIND) {
-        pi.sendMessage({
-          customType: BLOCKED_KIND,
-          content:
-            `Task "${payload.taskName}" in orchestration "${payload.orchestrationId}" is blocked:\n\n${payload.message}`,
-          display: true,
-          details: payload,
-        }, { triggerTurn: true, deliverAs: "steer" });
-      }
-    },
-    {
-      onTaskTerminal: ({ orchestrationId, taskIndex }) => {
-        onOrchestrationTaskTerminal(orchestrationId, taskIndex);
-      },
-      onResumeStarted: ({ orchestrationId, taskIndex }) => {
-        onOrchestrationResumeStarted(orchestrationId, taskIndex);
-      },
-    },
-  );
-
   registerOrchestrationTools(
     pi,
-    (ctx) => makeDefaultDeps(ctx),
+    // Test seam: Task 7b (__test__.setLauncherDepsOverride).
+    (ctx) => launcherDepsOverride ?? makeDefaultDeps(ctx),
     shouldRegister,
     preflightOrchestration,
     selfSpawnBlocked,

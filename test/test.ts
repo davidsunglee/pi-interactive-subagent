@@ -785,3 +785,48 @@ describe("cmux.ts", () => {
     });
   });
 });
+
+describe("subagents __test__ — extension-level seams", () => {
+  const api = (subagentsModule as any).__test__;
+
+  it("exposes LauncherDeps override setter + getter", () => {
+    assert.equal(typeof api.setLauncherDepsOverride, "function");
+    assert.equal(typeof api.getLauncherDepsOverride, "function");
+    const fake = { launch: async () => ({}) as any, waitForCompletion: async () => ({}) as any };
+    api.setLauncherDepsOverride(fake);
+    assert.equal(api.getLauncherDepsOverride(), fake);
+    api.setLauncherDepsOverride(null);
+    assert.equal(api.getLauncherDepsOverride(), null);
+  });
+
+  it("exposes watchSubagent override setter + getter", () => {
+    assert.equal(typeof api.setWatchSubagentOverride, "function");
+    assert.equal(typeof api.getWatchSubagentOverride, "function");
+    const fake = async () => ({}) as any;
+    api.setWatchSubagentOverride(fake);
+    assert.equal(api.getWatchSubagentOverride(), fake);
+    api.setWatchSubagentOverride(null);
+    assert.equal(api.getWatchSubagentOverride(), null);
+  });
+
+  it("exposes registry introspection seams for tool-boundary tests", () => {
+    assert.equal(typeof api.getRegistry, "function");
+    assert.equal(typeof api.resetRegistry, "function");
+    const r1 = api.getRegistry();
+    assert.ok(r1 && typeof r1.dispatchAsync === "function");
+    api.resetRegistry();
+    const r2 = api.getRegistry();
+    assert.notEqual(r1, r2, "resetRegistry must return a fresh instance");
+  });
+
+  it("exposes mux-availability override so subagent_resume tool-boundary tests run on no-mux hosts", () => {
+    assert.equal(typeof api.setMuxAvailableOverride, "function");
+    assert.equal(typeof api.getMuxAvailableOverride, "function");
+    api.setMuxAvailableOverride(true);
+    assert.equal(api.getMuxAvailableOverride(), true);
+    api.setMuxAvailableOverride(false);
+    assert.equal(api.getMuxAvailableOverride(), false);
+    api.setMuxAvailableOverride(null);
+    assert.equal(api.getMuxAvailableOverride(), null);
+  });
+});
