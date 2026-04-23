@@ -251,7 +251,7 @@ A single aggregated completion is delivered later via an `orchestration_complete
 
 ### Task schema
 
-Each entry in `subagent_serial.tasks` / `subagent_parallel.tasks` accepts the full per-call `SubagentParams` surface that the bare `subagent` tool already exposes: `agent`, `task`, `name`, `cli`, `model`, `thinking`, `systemPrompt`, `skills`, `tools`, `cwd`, `fork`, `resumeSessionId`, plus the `focus` override. The only `SubagentParams`-adjacent fields not plumbed today are `interactive` and `permissionMode` (upstream `launchSubagent` doesn't accept them yet).
+Each entry in `subagent_run_serial.tasks` / `subagent_run_parallel.tasks` accepts the full per-call `SubagentParams` surface that the bare `subagent` tool already exposes: `agent`, `task`, `name`, `cli`, `model`, `thinking`, `systemPrompt`, `skills`, `tools`, `cwd`, `fork`, `resumeSessionId`, plus the `focus` override. The only `SubagentParams`-adjacent fields not plumbed today are `interactive` and `permissionMode` (upstream `launchSubagent` doesn't accept them yet).
 
 ### Claude plugin (bundled, auto-loaded — no manual install required)
 

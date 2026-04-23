@@ -58,16 +58,17 @@ describe("async orchestration — real subagentsExtension wiring", () => {
 
     await new Promise((r) => setTimeout(r, 100));
 
-    const completion = sendMessageCalls.find(
+    const completions = sendMessageCalls.filter(
       (c) => c.msg.customType === "orchestration_complete",
     );
-    assert.ok(completion, "expected an orchestration_complete sendMessage");
-    assert.equal(completion!.options?.deliverAs, "steer");
-    assert.equal(completion!.options?.triggerTurn, true);
-    assert.equal(completion!.msg.details.orchestrationId, env.details.orchestrationId);
-    assert.equal(completion!.msg.details.results.length, 2);
+    assert.equal(completions.length, 1, "expected exactly one orchestration_complete");
+    const completion = completions[0];
+    assert.equal(completion.options?.deliverAs, "steer");
+    assert.equal(completion.options?.triggerTurn, true);
+    assert.equal(completion.msg.details.orchestrationId, env.details.orchestrationId);
+    assert.equal(completion.msg.details.results.length, 2);
     assert.deepEqual(
-      completion!.msg.details.results.map((r: any) => r.state),
+      completion.msg.details.results.map((r: any) => r.state),
       ["completed", "completed"],
     );
   });
