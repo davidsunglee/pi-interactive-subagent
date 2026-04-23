@@ -52,7 +52,7 @@ const MUX_ENV_KEYS = [
 ];
 
 async function runRegisteredTool(
-  toolName: "subagent" | "subagent_serial" | "subagent_parallel",
+  toolName: "subagent" | "subagent_run_serial" | "subagent_run_parallel",
   params: unknown,
   dir: string,
 ) {
@@ -226,9 +226,9 @@ describe("orchestration-headless-no-mux (forced headless)", { skip: !PI_AVAILABL
     );
   });
 
-  it("subagent_serial executes through the real registered tool callback under forced headless", async () => {
+  it("subagent_run_serial executes through the real registered tool callback under forced headless", async () => {
     const { result } = await runRegisteredTool(
-      "subagent_serial",
+      "subagent_run_serial",
       { tasks: [{ agent: "test-echo", task: "Reply with exactly: OK" }] },
       dir,
     );
@@ -241,9 +241,9 @@ describe("orchestration-headless-no-mux (forced headless)", { skip: !PI_AVAILABL
     assert.ok(result.details.results[0].finalMessage.trim().length > 0);
   });
 
-  it("subagent_parallel executes through the real registered tool callback under forced headless", async () => {
+  it("subagent_run_parallel executes through the real registered tool callback under forced headless", async () => {
     const { result } = await runRegisteredTool(
-      "subagent_parallel",
+      "subagent_run_parallel",
       {
         tasks: [
           { agent: "test-echo", task: "Reply with exactly: A" },
@@ -304,9 +304,9 @@ describe("orchestration-headless-no-mux (auto + no mux env)", { skip: !PI_AVAILA
     assert.ok(typeof steer.message.content === "string" && steer.message.content.length > 0);
   });
 
-  it("subagent_serial reaches headless via selectBackend's auto fallback when no mux is present", async () => {
+  it("subagent_run_serial reaches headless via selectBackend's auto fallback when no mux is present", async () => {
     const { result } = await runRegisteredTool(
-      "subagent_serial",
+      "subagent_run_serial",
       { tasks: [{ agent: "test-echo", task: "Reply with exactly: OK" }] },
       dir,
     );
@@ -319,9 +319,9 @@ describe("orchestration-headless-no-mux (auto + no mux env)", { skip: !PI_AVAILA
     assert.ok(result.details.results[0].finalMessage.trim().length > 0);
   });
 
-  it("subagent_parallel reaches headless via selectBackend's auto fallback when no mux is present", async () => {
+  it("subagent_run_parallel reaches headless via selectBackend's auto fallback when no mux is present", async () => {
     const { result } = await runRegisteredTool(
-      "subagent_parallel",
+      "subagent_run_parallel",
       {
         tasks: [
           { agent: "test-echo", task: "Reply with exactly: A" },

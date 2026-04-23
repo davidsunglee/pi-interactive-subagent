@@ -1754,7 +1754,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // ── Orchestration tools (our additions) ──
   // Pass shouldRegister through so per-tool deny entries in settings.json
-  // (e.g. disabling subagent_parallel alone) gate each tool independently.
+  // (e.g. disabling subagent_run_parallel alone) gate each tool independently.
   // Pass preflightOrchestration so orchestration execute handlers surface the
   // same backend-aware mux/session-file errors as the bare subagent tool.
   // Pass selfSpawnBlocked so orchestration handlers enforce the same

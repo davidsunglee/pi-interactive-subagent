@@ -38,29 +38,29 @@ describe("registerOrchestrationTools", () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => noopDeps, () => true);
     const names = tools.map((t) => t.name);
-    assert.deepEqual(names.sort(), ["subagent_parallel", "subagent_serial"]);
+    assert.deepEqual(names.sort(), ["subagent_run_parallel", "subagent_run_serial"]);
   });
 
-  it("registers only subagent_serial when subagent_parallel is denied", () => {
+  it("registers only subagent_run_serial when subagent_run_parallel is denied", () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(
       api,
       () => noopDeps,
-      (name) => name === "subagent_serial",
+      (name) => name === "subagent_run_serial",
     );
     const names = tools.map((t) => t.name);
-    assert.deepEqual(names, ["subagent_serial"]);
+    assert.deepEqual(names, ["subagent_run_serial"]);
   });
 
-  it("registers only subagent_parallel when subagent_serial is denied", () => {
+  it("registers only subagent_run_parallel when subagent_run_serial is denied", () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(
       api,
       () => noopDeps,
-      (name) => name === "subagent_parallel",
+      (name) => name === "subagent_run_parallel",
     );
     const names = tools.map((t) => t.name);
-    assert.deepEqual(names, ["subagent_parallel"]);
+    assert.deepEqual(names, ["subagent_run_parallel"]);
   });
 
   it("registers nothing when shouldRegister rejects both", () => {
@@ -69,10 +69,10 @@ describe("registerOrchestrationTools", () => {
     assert.deepEqual(tools, []);
   });
 
-  it("subagent_serial.execute invokes runSerial and returns aggregated result", async () => {
+  it("subagent_run_serial.execute invokes runSerial and returns aggregated result", async () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => noopDeps, () => true);
-    const serial = tools.find((t) => t.name === "subagent_serial");
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
     const out = await serial.execute(
       "call-1",
       { tasks: [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }] },
@@ -85,10 +85,10 @@ describe("registerOrchestrationTools", () => {
     assert.equal(details.isError, false);
   });
 
-  it("subagent_parallel rejects maxConcurrency > 8 with a readable message", async () => {
+  it("subagent_run_parallel rejects maxConcurrency > 8 with a readable message", async () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => noopDeps, () => true);
-    const parallel = tools.find((t) => t.name === "subagent_parallel");
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
     const out = await parallel.execute(
       "call-2",
       { tasks: [{ agent: "x", task: "t" }], maxConcurrency: 12 },
@@ -100,7 +100,7 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.error, "maxConcurrency exceeds hard cap");
   });
 
-  it("subagent_serial short-circuits with the shared preflight error when the ctx rejects", async () => {
+  it("subagent_run_serial short-circuits with the shared preflight error when the ctx rejects", async () => {
     // The mock `noopDeps` launch/wait would otherwise succeed; the handler
     // must call the injected preflight helper BEFORE building deps.
     const { api, tools } = createMockApi();
@@ -110,7 +110,7 @@ describe("registerOrchestrationTools", () => {
       details: { error: "no session file" },
     });
     registerOrchestrationTools(api, () => noopDeps, () => true, denyingPreflight);
-    const serial = tools.find((t) => t.name === "subagent_serial");
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
     const out = await serial.execute(
       "call-3",
       { tasks: [{ agent: "x", task: "t" }] },
@@ -122,10 +122,10 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.error, "no session file");
   });
 
-  it("subagent_serial short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
+  it("subagent_run_serial short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
     // v5 review finding #1: the bare `subagent` tool already rejects when
     // params.agent === PI_SUBAGENT_AGENT; orchestration must match that
-    // existing runtime invariant for `subagent_serial` / `subagent_parallel`
+    // existing runtime invariant for `subagent_run_serial` / `subagent_run_parallel`
     // (a `planner` session cannot launch another `planner` via the wrappers).
     //
     // The registrar accepts an injected `selfSpawn` check so this test
@@ -164,7 +164,7 @@ describe("registerOrchestrationTools", () => {
       () => null, // preflight: pass
       denyingSelfSpawn,
     );
-    const serial = tools.find((t) => t.name === "subagent_serial");
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
     const out = await serial.execute(
       "call-4",
       {
@@ -183,7 +183,7 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.error, "self-spawn blocked");
   });
 
-  it("subagent_serial threads the tool AbortSignal into runSerial so a pre-aborted call records no launch", async () => {
+  it("subagent_run_serial threads the tool AbortSignal into runSerial so a pre-aborted call records no launch", async () => {
     let launched = 0;
     const spyDeps: LauncherDeps = {
       async launch(task) {
@@ -196,7 +196,7 @@ describe("registerOrchestrationTools", () => {
     };
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => spyDeps, () => true);
-    const serial = tools.find((t) => t.name === "subagent_serial");
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
     const ac = new AbortController();
     ac.abort();
     const out = await serial.execute(
@@ -212,7 +212,7 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.results[0].error, "cancelled");
   });
 
-  it("subagent_parallel threads the tool AbortSignal into runParallel so a pre-aborted call records no launch", async () => {
+  it("subagent_run_parallel threads the tool AbortSignal into runParallel so a pre-aborted call records no launch", async () => {
     let launched = 0;
     const spyDeps: LauncherDeps = {
       async launch(task) {
@@ -225,7 +225,7 @@ describe("registerOrchestrationTools", () => {
     };
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => spyDeps, () => true);
-    const parallel = tools.find((t) => t.name === "subagent_parallel");
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
     const ac = new AbortController();
     ac.abort();
     const out = await parallel.execute(
@@ -247,10 +247,10 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.results[1].error, "cancelled");
   });
 
-  it("subagent_serial (wait:true) returns results with index on every task per the public envelope", async () => {
+  it("subagent_run_serial (wait:true) returns results with index on every task per the public envelope", async () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => noopDeps, () => true);
-    const serial = tools.find((t) => t.name === "subagent_serial");
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
     const out = await serial.execute(
       "call-envelope-serial",
       { tasks: [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }] },
@@ -263,10 +263,10 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.results[0].state, "completed");
   });
 
-  it("subagent_parallel (wait:true) returns results with index on every task per the public envelope", async () => {
+  it("subagent_run_parallel (wait:true) returns results with index on every task per the public envelope", async () => {
     const { api, tools } = createMockApi();
     registerOrchestrationTools(api, () => noopDeps, () => true);
-    const parallel = tools.find((t) => t.name === "subagent_parallel");
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
     const out = await parallel.execute(
       "call-envelope-parallel",
       { tasks: [{ name: "t1", agent: "x", task: "t1" }, { name: "t2", agent: "x", task: "t2" }] },
@@ -279,7 +279,7 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.results[0].state, "completed");
   });
 
-  it("subagent_parallel short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
+  it("subagent_run_parallel short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
     let launched = 0;
     const countingDeps: LauncherDeps = {
       async launch(task) {
@@ -311,7 +311,7 @@ describe("registerOrchestrationTools", () => {
       () => null,
       denyingSelfSpawn,
     );
-    const parallel = tools.find((t) => t.name === "subagent_parallel");
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
     const out = await parallel.execute(
       "call-5",
       {

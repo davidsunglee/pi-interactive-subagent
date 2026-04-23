@@ -96,7 +96,7 @@ export interface AsyncDispatchEnvelope {
  * mock all IO (pane spawning, sentinel waits, transcript reads).
  *
  * `signal` is the tool-execution AbortSignal threaded down from
- * `subagent_serial` / `subagent_parallel`. `waitForCompletion` must
+ * `subagent_run_serial` / `subagent_run_parallel`. `waitForCompletion` must
  * observe it so user-initiated cancellation of the tool call aborts
  * the running subagent's poll loop and frees its pane. `launch`
  * accepts the signal symmetrically for future use (e.g. surface

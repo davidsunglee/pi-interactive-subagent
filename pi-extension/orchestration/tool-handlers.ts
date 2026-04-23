@@ -31,9 +31,9 @@ export function registerOrchestrationTools(
   preflight: PreflightFn = () => null,
   selfSpawn: SelfSpawnCheckFn = () => null,
 ) {
-  if (shouldRegister("subagent_serial")) {
+  if (shouldRegister("subagent_run_serial")) {
     pi.registerTool({
-      name: "subagent_serial",
+      name: "subagent_run_serial",
       label: "Serial Subagents",
       description:
         "Run a sequence of subagent tasks in order. Each task's output is available to the next " +
@@ -71,7 +71,7 @@ export function registerOrchestrationTools(
           };
         } catch (err: any) {
           return {
-            content: [{ type: "text", text: `subagent_serial error: ${err?.message ?? String(err)}` }],
+            content: [{ type: "text", text: `subagent_run_serial error: ${err?.message ?? String(err)}` }],
             details: { error: err?.message ?? String(err) },
           };
         }
@@ -79,9 +79,9 @@ export function registerOrchestrationTools(
     });
   }
 
-  if (shouldRegister("subagent_parallel")) {
+  if (shouldRegister("subagent_run_parallel")) {
     pi.registerTool({
-      name: "subagent_parallel",
+      name: "subagent_run_parallel",
       label: "Parallel Subagents",
       description:
         "Run a batch of subagent tasks concurrently (default 4, hard cap 8). Blocks until all " +
@@ -128,7 +128,7 @@ export function registerOrchestrationTools(
           const msg = err?.message ?? String(err);
           const hint = msg.includes("hard cap")
             ? msg
-            : `subagent_parallel error: ${msg}`;
+            : `subagent_run_parallel error: ${msg}`;
           return {
             content: [{ type: "text", text: hint }],
             details: {

@@ -61,7 +61,7 @@ describe("resolveLaunchSpec", () => {
     assert.equal(spec.effectiveModel, "anthropic/claude-sonnet-4-5");
     assert.equal(spec.effectiveTools, "read, bash, write, edit");
     assert.equal(spec.autoExit, true);
-    assert.ok(spec.denySet.has("subagent_serial"));
+    assert.ok(spec.denySet.has("subagent_run_serial"));
   });
 
   it("flips taskDelivery to direct only when fork (or agent session-mode=fork) is set", () => {

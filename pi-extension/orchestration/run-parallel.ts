@@ -44,11 +44,11 @@ export async function runParallel(
   const cap = opts.maxConcurrency ?? DEFAULT_PARALLEL_CONCURRENCY;
   if (cap > MAX_PARALLEL_HARD_CAP) {
     throw new Error(
-      `subagent_parallel: maxConcurrency=${cap} exceeds hard cap ${MAX_PARALLEL_HARD_CAP}. Split into sub-waves.`,
+      `subagent_run_parallel: maxConcurrency=${cap} exceeds hard cap ${MAX_PARALLEL_HARD_CAP}. Split into sub-waves.`,
     );
   }
   if (cap < 1) {
-    throw new Error(`subagent_parallel: maxConcurrency=${cap} must be >= 1.`);
+    throw new Error(`subagent_run_parallel: maxConcurrency=${cap} must be >= 1.`);
   }
 
   const results: OrchestrationResult[] = new Array(tasks.length);

@@ -154,8 +154,9 @@ const SPAWNING_TOOLS = new Set([
   "subagent",
   "subagents_list",
   "subagent_resume",
-  "subagent_serial",
-  "subagent_parallel",
+  "subagent_run_serial",
+  "subagent_run_parallel",
+  "subagent_run_cancel",
 ]);
 
 // ── Helpers ────────────────────────────────────────────────────────────────
