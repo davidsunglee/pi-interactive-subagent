@@ -33,6 +33,11 @@ import {
 import { registerOrchestrationTools } from "../orchestration/tool-handlers.ts";
 import { makeDefaultDeps } from "../orchestration/default-deps.ts";
 import { preflightOrchestration } from "./preflight-orchestration.ts";
+import { createRegistry, type Registry } from "../orchestration/registry.ts";
+import {
+  ORCHESTRATION_COMPLETE_KIND,
+  BLOCKED_KIND,
+} from "../orchestration/notification-kinds.ts";
 import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
@@ -1761,12 +1766,53 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   // PI_SUBAGENT_AGENT recursion guard as the bare subagent tool
   // (v5 review finding #1 — no silent bypass of the existing runtime
   // invariant).
+
+  // Task 13 fills these bodies with virtual-widget cleanup. Phase 1 leaves them no-op.
+  function onOrchestrationTaskTerminal(_orchestrationId: string, _taskIndex: number): void {
+    // no-op (Task 13)
+  }
+  function onOrchestrationResumeStarted(_orchestrationId: string, _taskIndex: number): void {
+    // no-op (Task 13)
+  }
+
+  const registry: Registry = createRegistry(
+    (payload) => {
+      if (payload.kind === ORCHESTRATION_COMPLETE_KIND) {
+        pi.sendMessage({
+          customType: "orchestration_complete",
+          content:
+            `Orchestration "${payload.orchestrationId}" completed ` +
+            `(${payload.results.length} task(s), isError=${payload.isError}).`,
+          display: true,
+          details: payload,
+        }, { triggerTurn: true, deliverAs: "steer" });
+      } else if (payload.kind === BLOCKED_KIND) {
+        pi.sendMessage({
+          customType: BLOCKED_KIND,
+          content:
+            `Task "${payload.taskName}" in orchestration "${payload.orchestrationId}" is blocked:\n\n${payload.message}`,
+          display: true,
+          details: payload,
+        }, { triggerTurn: true, deliverAs: "steer" });
+      }
+    },
+    {
+      onTaskTerminal: ({ orchestrationId, taskIndex }) => {
+        onOrchestrationTaskTerminal(orchestrationId, taskIndex);
+      },
+      onResumeStarted: ({ orchestrationId, taskIndex }) => {
+        onOrchestrationResumeStarted(orchestrationId, taskIndex);
+      },
+    },
+  );
+
   registerOrchestrationTools(
     pi,
     (ctx) => makeDefaultDeps(ctx),
     shouldRegister,
     preflightOrchestration,
     selfSpawnBlocked,
+    { registry },
   );
 }
 // test

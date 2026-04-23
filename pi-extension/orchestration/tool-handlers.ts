@@ -3,14 +3,17 @@ import { Type } from "@sinclair/typebox";
 import { runSerial } from "./run-serial.ts";
 import { runParallel } from "./run-parallel.ts";
 import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult } from "./types.ts";
+import type { Registry } from "./registry.ts";
 
 const SerialParams = Type.Object({
   tasks: Type.Array(OrchestrationTaskSchema),
+  wait: Type.Optional(Type.Boolean({ description: "Default true. Set false to dispatch asynchronously; tool returns immediately with { orchestrationId, tasks } and delivers aggregated results via steer-back." })),
 });
 
 const ParallelParams = Type.Object({
   tasks: Type.Array(OrchestrationTaskSchema),
   maxConcurrency: Type.Optional(Type.Number()),
+  wait: Type.Optional(Type.Boolean({ description: "Default true. Set false to dispatch asynchronously; tool returns immediately with { orchestrationId, tasks } and delivers aggregated results via steer-back." })),
 });
 
 type ErrorResult = {
@@ -24,13 +27,19 @@ export type PreflightFn = (ctx: {
 
 export type SelfSpawnCheckFn = (agent: string | undefined) => ErrorResult | null;
 
+export interface OrchestrationRegistrarExtras {
+  registry?: Registry;
+}
+
 export function registerOrchestrationTools(
   pi: ExtensionAPI,
   depsFactory: (ctx: { sessionManager: any; cwd: string }) => LauncherDeps,
   shouldRegister: (name: string) => boolean,
   preflight: PreflightFn = () => null,
   selfSpawn: SelfSpawnCheckFn = () => null,
+  extras: OrchestrationRegistrarExtras = {},
 ) {
+  const registry = extras.registry;
   if (shouldRegister("subagent_run_serial")) {
     pi.registerTool({
       name: "subagent_run_serial",
@@ -50,6 +59,75 @@ export function registerOrchestrationTools(
         }
         const gate = preflight(ctx);
         if (gate) return gate;
+
+        if (params.wait === false) {
+          if (!registry) {
+            return {
+              content: [{ type: "text", text: "Async orchestration unavailable: registry not configured." }],
+              details: { error: "registry unavailable" },
+            };
+          }
+          const orchestrationId = registry.dispatchAsync({
+            config: { mode: "serial", tasks: params.tasks },
+          });
+          const deps = depsFactory(ctx);
+          // Fire-and-forget: background execution with registry bookkeeping.
+          (async () => {
+            try {
+              await runSerial(params.tasks, {
+                // No signal: async runs are cancelled via subagent_run_cancel, not AbortSignal.
+                onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
+                onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
+                // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
+              }, deps);
+              // Post-run cleanup: any slot still pending/running is swept to cancelled
+              // (belt & suspenders — runSerial should have reported each step before
+              // returning, but if it bailed early for any reason we ensure the
+              // orchestration finalizes instead of staying live).
+              const snap = registry.getSnapshot(orchestrationId);
+              if (snap) {
+                for (const t of snap.tasks) {
+                  if (t.state === "pending" || t.state === "running") {
+                    registry.onTaskTerminal(orchestrationId, t.index, {
+                      ...t, state: "cancelled", exitCode: 1, error: t.error ?? "not launched",
+                    });
+                  }
+                }
+              }
+            } catch (err: any) {
+              // Catastrophic failure: mark every non-terminal slot as failed.
+              const snap = registry.getSnapshot(orchestrationId);
+              if (snap) {
+                for (const t of snap.tasks) {
+                  if (t.state === "pending" || t.state === "running" || t.state === "blocked") {
+                    registry.onTaskTerminal(orchestrationId, t.index, {
+                      ...t, state: "failed", exitCode: 1, error: err?.message ?? String(err),
+                    });
+                  }
+                }
+              }
+            }
+          })();
+          const envelope = {
+            orchestrationId,
+            tasks: params.tasks.map((t, i) => ({
+              name: t.name ?? `step-${i + 1}`,
+              index: i,
+              state: "pending" as const,
+            })),
+            isError: false as const,
+          };
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Orchestration "${orchestrationId}" started asynchronously (${params.tasks.length} task(s)). ` +
+                `Do NOT assume results — aggregated completion will be delivered via a steer message.`,
+            }],
+            details: envelope,
+          };
+        }
+
         const deps = depsFactory(ctx);
         try {
           const out = await runSerial(
@@ -101,6 +179,72 @@ export function registerOrchestrationTools(
         }
         const gate = preflight(ctx);
         if (gate) return gate;
+
+        if (params.wait === false) {
+          if (!registry) {
+            return {
+              content: [{ type: "text", text: "Async orchestration unavailable: registry not configured." }],
+              details: { error: "registry unavailable" },
+            };
+          }
+          const orchestrationId = registry.dispatchAsync({
+            config: { mode: "parallel", tasks: params.tasks, maxConcurrency: params.maxConcurrency },
+          });
+          const deps = depsFactory(ctx);
+          // Fire-and-forget: background execution with registry bookkeeping.
+          (async () => {
+            try {
+              await runParallel(params.tasks, {
+                onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
+                onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
+                maxConcurrency: params.maxConcurrency,
+                // Phase 2 also wires onBlocked here (Task 10). Left unset in Phase 1.
+              }, deps);
+              // Post-run cleanup: any slot still pending/running is swept to cancelled.
+              const snap = registry.getSnapshot(orchestrationId);
+              if (snap) {
+                for (const t of snap.tasks) {
+                  if (t.state === "pending" || t.state === "running") {
+                    registry.onTaskTerminal(orchestrationId, t.index, {
+                      ...t, state: "cancelled", exitCode: 1, error: t.error ?? "not launched",
+                    });
+                  }
+                }
+              }
+            } catch (err: any) {
+              // Catastrophic failure: mark every non-terminal slot as failed.
+              const snap = registry.getSnapshot(orchestrationId);
+              if (snap) {
+                for (const t of snap.tasks) {
+                  if (t.state === "pending" || t.state === "running" || t.state === "blocked") {
+                    registry.onTaskTerminal(orchestrationId, t.index, {
+                      ...t, state: "failed", exitCode: 1, error: err?.message ?? String(err),
+                    });
+                  }
+                }
+              }
+            }
+          })();
+          const envelope = {
+            orchestrationId,
+            tasks: params.tasks.map((t, i) => ({
+              name: t.name ?? `task-${i + 1}`,
+              index: i,
+              state: "pending" as const,
+            })),
+            isError: false as const,
+          };
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Orchestration "${orchestrationId}" started asynchronously (${params.tasks.length} task(s)). ` +
+                `Do NOT assume results — aggregated completion will be delivered via a steer message.`,
+            }],
+            details: envelope,
+          };
+        }
+
         const deps = depsFactory(ctx);
         try {
           const out = await runParallel(

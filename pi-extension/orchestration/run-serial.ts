@@ -1,5 +1,6 @@
 import type {
   LauncherDeps,
+  OrchestratedTaskResult,
   OrchestrationResult,
   OrchestrationTask,
 } from "./types.ts";
@@ -23,6 +24,13 @@ export interface RunSerialOpts {
     content: { type: "text"; text: string }[];
     details: any;
   }) => void;
+  /**
+   * Registry hook: called just after `deps.launch` resolves. `sessionKey` is
+   * the stable resume-addressable identifier for the launched child.
+   */
+  onLaunched?: (taskIndex: number, info: { sessionKey?: string }) => void;
+  /** Registry hook: called once per task as soon as its terminal state is known. */
+  onTerminal?: (taskIndex: number, result: OrchestratedTaskResult) => void;
 }
 
 export interface RunSerialOutput {
@@ -49,7 +57,7 @@ export async function runSerial(
     };
 
     if (opts.signal?.aborted) {
-      results.push({
+      const cancelledResult: OrchestrationResult = {
         name: task.name!,
         index: i,
         finalMessage: "",
@@ -58,6 +66,17 @@ export async function runSerial(
         elapsedMs: 0,
         error: "cancelled",
         state: "cancelled",
+      };
+      results.push(cancelledResult);
+      opts.onTerminal?.(i, {
+        name: cancelledResult.name,
+        index: i,
+        state: "cancelled",
+        finalMessage: cancelledResult.finalMessage,
+        transcriptPath: cancelledResult.transcriptPath,
+        elapsedMs: cancelledResult.elapsedMs,
+        exitCode: cancelledResult.exitCode,
+        error: cancelledResult.error,
       });
       return { results, isError: true };
     }
@@ -84,6 +103,7 @@ export async function runSerial(
       : undefined;
     try {
       const handle = await deps.launch(task, true /* defaultFocus */, opts.signal);
+      opts.onLaunched?.(i, { sessionKey: (handle as any).sessionKey });
       result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate);
     } catch (err: any) {
       result = {
@@ -98,6 +118,19 @@ export async function runSerial(
     result.index = i;
     result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
     results.push(result);
+    opts.onTerminal?.(i, {
+      name: result.name,
+      index: i,
+      state: result.state,
+      finalMessage: result.finalMessage,
+      transcriptPath: result.transcriptPath ?? null,
+      elapsedMs: result.elapsedMs,
+      exitCode: result.exitCode,
+      sessionKey: result.sessionKey,
+      error: result.error,
+      usage: result.usage,
+      transcript: result.transcript,
+    });
 
     if (result.exitCode !== 0 || result.error) {
       return { results, isError: true };
