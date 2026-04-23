@@ -86,7 +86,7 @@ PI_SUBAGENT_MODE=auto      # default — detect mux, fall back to headless
 | `transcriptPath` | both                   | Path to the session/transcript file. For pi runs, this is `getDefaultSessionDirFor(effectiveCwd, effectiveAgentDir)` — typically `~/.pi/agent/sessions/<project-slug>/`, but project-local `.pi/agent/` and `PI_CODING_AGENT_DIR` override it. For Claude runs, this is always under `~/.pi/agent/sessions/claude-code/`. |
 | `exitCode`       | both                   | 0 on success, 1 on error / cancellation.                              |
 | `elapsedMs`      | both                   | Wall time from launch to completion.                                  |
-| `sessionKey`     | both                   | Resume-addressable identifier. For pi children this is the subagent session file path (accepted directly by `subagent_resume({ sessionPath })`); for Claude children this is the Claude session id. Always populated on successful terminal results; undefined while a task is `pending`. |
+| `sessionKey`     | both                   | Resume-addressable identifier. For pi children this is the subagent session file path (accepted directly by `subagent_resume({ sessionPath })`); for Claude children this is the Claude session id (accepted directly by `subagent_resume({ sessionId })`). Always populated on successful terminal results; undefined while a task is `pending`. |
 | `error`          | both                   | Non-empty when the run didn't cleanly finish.                         |
 | `usage`          | **headless only (v1)** | `{ input, output, cacheRead, cacheWrite, cost, contextTokens, turns }` |
 | `transcript`     | **headless only (v1)** | Parsed array of `TranscriptMessage { role, content[] }`. Content block types: `"text" \| "thinking" \| "toolCall" \| "image"`. Rich provider metadata (stopReason, per-message timestamp/cost) is **not** surfaced here — read the archived `.jsonl` at `transcriptPath` for the full stream. |
@@ -114,7 +114,7 @@ Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task)
 | ----------------------- | ----------------------------------------------------------------------------------------- |
 | `subagent`              | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately)           |
 | `subagents_list`        | List available agent definitions                                                          |
-| `subagent_resume`       | Resume a previous sub-agent session (async)                                               |
+| `subagent_resume`       | Resume a previous sub-agent session (async). Pass exactly one of `sessionPath` (pi-backed) or `sessionId` (Claude-backed). |
 | `subagent_run_serial`   | Run a pipeline of subagents in order (blocks; `{previous}` substitution; `wait: false` for async — tasks may enter `blocked` state when child calls `caller_ping`) |
 | `subagent_run_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8; `wait: false` for async — tasks may enter `blocked` state when child calls `caller_ping`) |
 | `subagent_run_cancel`   | Cancel an async orchestration by id (idempotent on already-terminal runs).                |

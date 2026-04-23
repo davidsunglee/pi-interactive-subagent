@@ -159,6 +159,39 @@ const SPAWNING_TOOLS = new Set([
   "subagent_run_cancel", // forward-compat: registered in Task 6
 ]);
 
+/** Pi CLI built-in tool names recognized by `--tools`. */
+const PI_BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+
+/**
+ * Lifecycle tools injected by the `subagent-done.ts` pi extension. Under a
+ * restrictive `--tools` allowlist pi would otherwise strip these, breaking the
+ * block-lifecycle contract: `caller_ping` signals the parent (Phase 2), and
+ * `subagent_done` signals terminal completion (Phase 1). Both must be present
+ * whenever we emit `--tools` so orchestration lifecycle invariants hold even
+ * when the agent frontmatter declares a tight `tools:` list.
+ */
+const PI_LIFECYCLE_TOOLS = ["caller_ping", "subagent_done"] as const;
+
+/**
+ * Resolve the argument for pi's `--tools` flag from an agent's `effectiveTools`
+ * declaration. Returns `undefined` when no restriction should be applied (and
+ * pi should run with its default tool surface).
+ *
+ * The lifecycle tools (`caller_ping`, `subagent_done`) are always reserved
+ * when we emit a restrictive list — see the review-v6 blocker fix for why
+ * pi-backed headless subagents were unable to enter the `blocked` state.
+ */
+export function resolvePiToolsArg(effectiveTools: string | undefined): string | undefined {
+  if (!effectiveTools) return undefined;
+  const builtins = effectiveTools
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => PI_BUILTIN_TOOLS.has(t));
+  if (builtins.length === 0) return undefined;
+  const merged = new Set<string>([...builtins, ...PI_LIFECYCLE_TOOLS]);
+  return [...merged].join(",");
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Resolve the global agent config directory, respecting PI_CODING_AGENT_DIR. */

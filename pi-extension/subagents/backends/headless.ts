@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { LineBuffer } from "./line-buffer.ts";
 import {
   resolveLaunchSpec,
+  resolvePiToolsArg,
   writeSystemPromptArtifact,
   writeTaskArtifact,
   type ResolvedLaunchSpec,
@@ -349,12 +350,8 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
     args.push("--model", model);
   }
   args.push(...systemPromptFlag);
-  if (spec.effectiveTools) {
-    const BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
-    const builtins = spec.effectiveTools
-      .split(",").map((t) => t.trim()).filter((t) => BUILTIN_TOOLS.has(t));
-    if (builtins.length > 0) args.push("--tools", builtins.join(","));
-  }
+  const toolsArg = resolvePiToolsArg(spec.effectiveTools);
+  if (toolsArg) args.push("--tools", toolsArg);
 
   let taskArg: string;
   if (spec.taskDelivery === "direct") {

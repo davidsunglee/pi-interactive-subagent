@@ -50,6 +50,7 @@ import {
   type ResolvedLaunchSpec,
   type SubagentSessionMode,
   resolveLaunchSpec,
+  resolvePiToolsArg,
   writeSystemPromptArtifact,
   writeTaskArtifact,
   loadAgentDefaults,
@@ -760,15 +761,9 @@ export async function launchSubagent(
     parts.push(flag, shellEscape(syspromptPath));
   }
 
-  if (spec.effectiveTools) {
-    const BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
-    const builtins = spec.effectiveTools
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => BUILTIN_TOOLS.has(t));
-    if (builtins.length > 0) {
-      parts.push("--tools", shellEscape(builtins.join(",")));
-    }
+  const toolsArg = resolvePiToolsArg(spec.effectiveTools);
+  if (toolsArg) {
+    parts.push("--tools", shellEscape(toolsArg));
   }
 
   // Build env prefix: denied tools + subagent identity + config dir propagation
