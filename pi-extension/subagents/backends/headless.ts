@@ -463,6 +463,7 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
         transcriptPath: null,
         exitCode: 1,
         elapsedMs: Date.now() - startTime,
+        sessionKey: spec.subagentSessionFile,
         error: err.code === "ENOENT"
           ? "pi CLI not found on PATH"
           : err.message || String(err),
