@@ -1814,6 +1814,34 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     };
   });
 
+  // ── orchestration_complete message renderer ──
+  pi.registerMessageRenderer("orchestration_complete", (message, _options, theme) => {
+    const details = message.details as any;
+    if (!details) return undefined;
+    return {
+      invalidate() {},
+      render(width: number): string[] {
+        const id = details.orchestrationId ?? "?";
+        const count = details.results?.length ?? 0;
+        const isError = !!details.isError;
+        const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+        const status = isError ? "completed with errors" : "completed";
+        const header =
+          `${icon} ${theme.fg("toolTitle", theme.bold("Orchestration"))} ` +
+          theme.fg("dim", id) + " — " + status + theme.fg("dim", ` (${count} task(s))`);
+        const lines: string[] = [header];
+        for (const r of details.results ?? []) {
+          const stateIcon = r.state === "completed" ? theme.fg("success", "✓")
+            : r.state === "failed" ? theme.fg("error", "✗")
+            : r.state === "cancelled" ? theme.fg("dim", "○")
+            : theme.fg("dim", "·");
+          lines.push(`  ${stateIcon} ${r.name} — ${r.state}`);
+        }
+        return ["", ...lines.map((l) => l.slice(0, width))];
+      },
+    };
+  });
+
   // /plan command — start the full planning workflow
   pi.registerCommand("plan", {
     description: "Start a planning session: /plan <what to build>",

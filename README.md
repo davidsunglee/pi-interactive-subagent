@@ -1,8 +1,8 @@
 # pi-interactive-subagent
 
-> **Fork notice.** This is a fork of [`HazAT/pi-interactive-subagents`](https://github.com/HazAT/pi-interactive-subagents). `pi-extension/subagents/` is upstream-derived and periodically rebased, but it carries local patches for orchestration integration and related fixes (spawning-tool gating, CLI/focus parameters, tmux detached spawn, Claude transcript archiving, and orchestration-tool registration from the extension entrypoint, plus the original `thinking` fix). The new orchestration tools (`subagent_serial`, `subagent_parallel`) live under `pi-extension/orchestration/`. Local patches against the vendored tree are tracked as named commits with intent to upstream where applicable.
+> **Fork notice.** This is a fork of [`HazAT/pi-interactive-subagents`](https://github.com/HazAT/pi-interactive-subagents). `pi-extension/subagents/` is upstream-derived and periodically rebased, but it carries local patches for orchestration integration and related fixes (spawning-tool gating, CLI/focus parameters, tmux detached spawn, Claude transcript archiving, and orchestration-tool registration from the extension entrypoint, plus the original `thinking` fix). The new orchestration tools (`subagent_run_serial`, `subagent_run_parallel`, `subagent_run_cancel`) live under `pi-extension/orchestration/`. Local patches against the vendored tree are tracked as named commits with intent to upstream where applicable.
 
-Async subagents for [pi](https://github.com/badlogic/pi-mono) — spawn, orchestrate, and manage sub-agent sessions in multiplexer panes. **Mixed-mode execution** — the bare `subagent` / `subagent_resume` tools are non-blocking (they return immediately after spawning the pane); the new `subagent_serial` / `subagent_parallel` orchestration tools block the caller until all tasks in the batch complete.
+Async subagents for [pi](https://github.com/badlogic/pi-mono) — spawn, orchestrate, and manage sub-agent sessions in multiplexer panes. **Mixed-mode execution** — the bare `subagent` / `subagent_resume` tools are non-blocking (they return immediately after spawning the pane); the new `subagent_run_serial` / `subagent_run_parallel` orchestration tools block the caller until all tasks in the batch complete (or return immediately with `wait: false`).
 
 https://github.com/user-attachments/assets/30adb156-cfb4-4c47-84ca-dd4aa80cba9f
 
@@ -75,7 +75,7 @@ PI_SUBAGENT_MODE=auto      # default — detect mux, fall back to headless
 
 ### Orchestration result shape
 
-`subagent_serial` and `subagent_parallel` return results with these fields per task:
+`subagent_run_serial` and `subagent_run_parallel` return results with these fields per task:
 
 | Field            | Backend filling it     | Notes                                                                 |
 | ---------------- | ---------------------- | --------------------------------------------------------------------- |
@@ -105,15 +105,16 @@ Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task)
 
 ### Extensions
 
-**Subagents** — 5 tools + 3 commands:
+**Subagents** — 6 tools + 3 commands:
 
-| Tool                | Description                                                                     |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `subagent`          | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately) |
-| `subagents_list`    | List available agent definitions                                                |
-| `subagent_resume`   | Resume a previous sub-agent session (async)                                     |
-| `subagent_serial`   | Run a pipeline of subagents in order (blocks; `{previous}` substitution)        |
-| `subagent_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8)   |
+| Tool                    | Description                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `subagent`              | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately)           |
+| `subagents_list`        | List available agent definitions                                                          |
+| `subagent_resume`       | Resume a previous sub-agent session (async)                                               |
+| `subagent_run_serial`   | Run a pipeline of subagents in order (blocks; `{previous}` substitution; `wait: false` for async) |
+| `subagent_run_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8; `wait: false` for async) |
+| `subagent_run_cancel`   | Cancel an async orchestration by id (idempotent on already-terminal runs).                |
 
 | Command                    | Description                          |
 | -------------------------- | ------------------------------------ |
@@ -196,7 +197,7 @@ subagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer"
 
 ## Orchestration tools (fork additions)
 
-### `subagent_serial`
+### `subagent_run_serial`
 
 Run subagent tasks sequentially. Each task may reference the previous task's final message via the `{previous}` placeholder.
 
@@ -216,7 +217,7 @@ Run subagent tasks sequentially. Each task may reference the previous task's fin
 - Returns `{ results: [...], isError }` with one entry per completed step.
 - Default `focus` = `true` for each task (panes grab focus as they spawn, on tmux).
 
-### `subagent_parallel`
+### `subagent_run_parallel`
 
 Run subagent tasks concurrently with a cap.
 
@@ -237,6 +238,16 @@ Run subagent tasks concurrently with a cap.
 - **Cancellation:** the tool-execution AbortSignal is threaded through the run. Cancelling the call aborts every in-flight task's wait (panes are closed, tasks are recorded with `error: "cancelled"`) and stops workers from launching not-yet-started tasks (those are filled with synthetic cancelled entries at their input index, preserving the `results.length === tasks.length` invariant). The cancelled run returns `isError: true`.
 - Default `focus` = `false` for each task. Honored only on tmux (spawned via `split-window -d`); **other backends (cmux, zellij, wezterm) currently focus the new pane regardless** — documented backend limitation. Use the widget or native mux shortcuts to navigate.
 - Set `focus: true` on an individual task to override.
+
+### Async dispatch (`wait: false`)
+
+Both orchestration tools accept an optional `wait: boolean` field (default `true`). When `wait` is `false`, the call returns immediately with:
+
+```json
+{ "orchestrationId": "7a3f91e2", "tasks": [ { "name": "a", "index": 0, "state": "pending" }, ... ], "isError": false }
+```
+
+A single aggregated completion is delivered later via an `orchestration_complete` steer-back message. Cancel with `subagent_run_cancel({ orchestrationId })`. Registry state is in-process only — a pi crash kills live async runs silently.
 
 ### Task schema
 
@@ -263,9 +274,9 @@ Known limitations in this degraded path: a dedicated "bundled-plugin directory n
 ### Manual smoke test (per-skill migration)
 
 1. `cd` to a scratch repo with a persistent pi session running.
-2. Dispatch `subagent_serial` with two trivial tasks (pi + pi), confirm both panes spawn, `{previous}` substitution works, final message returns.
-3. Dispatch `subagent_parallel` with 3 tasks and `maxConcurrency: 2` on tmux, confirm detached spawn (panes appear but focus stays on the caller), widget displays all three, results aggregate in input order. On non-tmux backends, confirm the new panes take focus (documented limitation).
-4. Dispatch `subagent_serial` with one `cli: "claude"` task (trivial prompt like "echo hello"), confirm the Stop hook fires and the transcript is copied to `~/.pi/agent/sessions/claude-code/`.
+2. Dispatch `subagent_run_serial` with two trivial tasks (pi + pi), confirm both panes spawn, `{previous}` substitution works, final message returns.
+3. Dispatch `subagent_run_parallel` with 3 tasks and `maxConcurrency: 2` on tmux, confirm detached spawn (panes appear but focus stays on the caller), widget displays all three, results aggregate in input order. On non-tmux backends, confirm the new panes take focus (documented limitation).
+4. Dispatch `subagent_run_serial` with one `cli: "claude"` task (trivial prompt like "echo hello"), confirm the Stop hook fires and the transcript is copied to `~/.pi/agent/sessions/claude-code/`.
 5. Verify `SubagentResult.transcriptPath` (visible via the orchestration tool's `details.results[i].transcriptPath`) points at a file that still `existsSync` after sentinel cleanup — this is the v3 archived-transcript fix and the behavior an automated integration test is expected to cover in a future revision.
 
 ---
@@ -426,7 +437,7 @@ By default, every sub-agent can spawn further sub-agents. Control this with fron
 
 ### `spawning: false`
 
-Denies all spawning tools (`subagent`, `subagents_list`, `subagent_resume`, `subagent_serial`, `subagent_parallel`):
+Denies all spawning tools (`subagent`, `subagents_list`, `subagent_resume`, `subagent_run_serial`, `subagent_run_parallel`, `subagent_run_cancel`):
 
 ```yaml
 ---
@@ -451,7 +462,7 @@ To deny only the parallel orchestration tool while still allowing serial and bar
 ```yaml
 ---
 name: focused-agent
-deny-tools: subagent_parallel
+deny-tools: subagent_run_parallel
 ---
 ```
 
