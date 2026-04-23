@@ -414,3 +414,69 @@ describe("createRegistry onTaskBlocked / onResumeTerminal", () => {
     assert.equal(complete.results[1].state, "completed");
   });
 });
+
+describe("createRegistry onResumeTerminal continuation gating", () => {
+  it("failed resume does NOT invoke the continuation", () => {
+    const { emitter } = makeEmitterSpy();
+    let continuationCalls = 0;
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [
+        { name: "a", agent: "x", task: "t0" },
+        { name: "b", agent: "x", task: "t1" },
+      ] },
+      onResumeUnblock: () => { continuationCalls++; },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "?" });
+    reg.onResumeStarted("sess-a");
+    reg.onResumeTerminal("sess-a", {
+      name: "a", index: 0, state: "failed", finalMessage: "", exitCode: 1, elapsedMs: 1, error: "boom",
+    });
+    assert.equal(continuationCalls, 0, "continuation must NOT fire on failed resume");
+  });
+
+  it("cancelled resume does NOT invoke the continuation", () => {
+    const { emitter } = makeEmitterSpy();
+    let continuationCalls = 0;
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [
+        { name: "a", agent: "x", task: "t0" },
+        { name: "b", agent: "x", task: "t1" },
+      ] },
+      onResumeUnblock: () => { continuationCalls++; },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "?" });
+    reg.onResumeStarted("sess-a");
+    reg.onResumeTerminal("sess-a", {
+      name: "a", index: 0, state: "cancelled", finalMessage: "", exitCode: 1, elapsedMs: 1,
+    });
+    assert.equal(continuationCalls, 0, "continuation must NOT fire on cancelled resume");
+  });
+
+  it("completed resume invokes the continuation exactly once with the correct payload", () => {
+    const { emitter } = makeEmitterSpy();
+    const continuationPayloads: any[] = [];
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [
+        { name: "a", agent: "x", task: "t0" },
+        { name: "b", agent: "x", task: "t1" },
+      ] },
+      onResumeUnblock: (ctx) => { continuationPayloads.push(ctx); },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "?" });
+    reg.onResumeStarted("sess-a");
+    reg.onResumeTerminal("sess-a", {
+      name: "a", index: 0, state: "completed", finalMessage: "done", exitCode: 0, elapsedMs: 5,
+    });
+    assert.equal(continuationPayloads.length, 1, "continuation must fire exactly once on completed resume");
+    assert.equal(continuationPayloads[0].orchestrationId, id);
+    assert.equal(continuationPayloads[0].taskIndex, 0);
+    assert.equal(continuationPayloads[0].resumedResult.state, "completed");
+    assert.equal(continuationPayloads[0].resumedResult.finalMessage, "done");
+  });
+});

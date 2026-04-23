@@ -2,8 +2,61 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { runSerial } from "./run-serial.ts";
 import { runParallel } from "./run-parallel.ts";
-import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult } from "./types.ts";
+import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult, type OrchestrationTask } from "./types.ts";
 import type { Registry } from "./registry.ts";
+
+function continueSerialFromIndex(opts: {
+  orchestrationId: string;
+  startIndex: number;
+  previous: string;
+  tasks: OrchestrationTask[];
+  deps: LauncherDeps;
+  registry: Registry;
+}): void {
+  const { orchestrationId, startIndex, previous, tasks, deps, registry } = opts;
+  const signal = registry.getAbortSignal(orchestrationId)!;
+  (async () => {
+    try {
+      const remaining = tasks.slice(startIndex).map((t, j) => ({
+        ...t,
+        task: j === 0 ? t.task.split("{previous}").join(previous) : t.task,
+      }));
+      const out = await runSerial(remaining, {
+        signal,
+        onLaunched: (j, info) => registry.onTaskLaunched(orchestrationId, startIndex + j, info),
+        onTerminal: (j, r) => registry.onTaskTerminal(orchestrationId, startIndex + j, { ...r, index: startIndex + j }),
+        onSessionKey: (j, key) => registry.updateSessionKey(orchestrationId, startIndex + j, key),
+        onBlocked: (j, p) => registry.onTaskBlocked(orchestrationId, startIndex + j, p),
+      }, deps);
+      if (out.blocked) {
+        // Paused again — wait for the next resume. Do NOT cancel the tail.
+        return;
+      }
+      // Post-run fallback sweep (only on true terminal exits).
+      const snap = registry.getSnapshot(orchestrationId);
+      if (snap) {
+        for (const t of snap.tasks) {
+          if (t.state === "pending" || t.state === "running") {
+            registry.onTaskTerminal(orchestrationId, t.index, {
+              ...t, state: "cancelled", exitCode: 1, error: t.error ?? "not launched",
+            });
+          }
+        }
+      }
+    } catch (err: any) {
+      const snap = registry.getSnapshot(orchestrationId);
+      if (snap) {
+        for (const t of snap.tasks) {
+          if (t.state === "pending" || t.state === "running" || t.state === "blocked") {
+            registry.onTaskTerminal(orchestrationId, t.index, {
+              ...t, state: "failed", exitCode: 1, error: err?.message ?? String(err),
+            });
+          }
+        }
+      }
+    }
+  })();
+}
 
 const SerialParams = Type.Object({
   tasks: Type.Array(OrchestrationTaskSchema),
@@ -71,10 +124,20 @@ export function registerOrchestrationTools(
               details: { error: "registry unavailable" },
             };
           }
+          const deps = depsFactory(ctx);
           const orchestrationId = registry.dispatchAsync({
             config: { mode: "serial", tasks: params.tasks },
+            onResumeUnblock: ({ taskIndex, resumedResult }) => {
+              continueSerialFromIndex({
+                orchestrationId,
+                startIndex: taskIndex + 1,
+                previous: resumedResult.finalMessage ?? "",
+                tasks: params.tasks,
+                deps,
+                registry,
+              });
+            },
           });
-          const deps = depsFactory(ctx);
           const signal = registry.getAbortSignal(orchestrationId)!;
           // Fire-and-forget: background execution with registry bookkeeping.
           (async () => {

@@ -78,10 +78,22 @@ interface OrchestrationEntry {
   overallState: "running" | "completed";
   sessionKeys: Map<number, string>; // taskIndex -> sessionKey (when known)
   abort: AbortController;
+  continuation?: (ctx: {
+    orchestrationId: string;
+    taskIndex: number;
+    resumedResult: OrchestratedTaskResult;
+  }) => void;
 }
 
 export interface Registry {
-  dispatchAsync(params: { config: OrchestrationConfig }): string;
+  dispatchAsync(params: {
+    config: OrchestrationConfig;
+    onResumeUnblock?: (ctx: {
+      orchestrationId: string;
+      taskIndex: number;
+      resumedResult: OrchestratedTaskResult;
+    }) => void;
+  }): string;
   onTaskLaunched(orchestrationId: string, taskIndex: number, info: { sessionKey?: string }): void;
   updateSessionKey(orchestrationId: string, taskIndex: number, sessionKey: string): void;
   onTaskTerminal(orchestrationId: string, taskIndex: number, result: OrchestratedTaskResult): void;
@@ -146,7 +158,7 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
   }
 
   const registry: Registry = {
-    dispatchAsync({ config }) {
+    dispatchAsync({ config, onResumeUnblock }) {
       const id = newHexId();
       const tasks: OrchestratedTaskResult[] = config.tasks.map((t, i) => ({
         name: t.name ?? (config.mode === "serial" ? `step-${i + 1}` : `task-${i + 1}`),
@@ -160,6 +172,7 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
         overallState: "running",
         sessionKeys: new Map(),
         abort: new AbortController(),
+        continuation: onResumeUnblock,
       });
       return id;
     },
@@ -259,7 +272,47 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
     onResumeTerminal(sessionKey, result) {
       const own = ownership.get(sessionKey);
       if (!own) return;
+      const entry = entries.get(own.orchestrationId);
+      const wasPausedByBlock =
+        entry?.tasks[own.taskIndex].state === "blocked" ||
+        entry?.tasks[own.taskIndex].state === "running";
+
+      // (1) Apply the resumed result — tryFinalize runs inside onTaskTerminal
+      // but is a no-op for a serial run with pending tail still present.
       registry.onTaskTerminal(own.orchestrationId, own.taskIndex, result);
+
+      if (!entry) return;
+
+      // (2) Serial non-success: sweep pending tail to cancelled and re-finalize.
+      if (wasPausedByBlock && entry.config.mode === "serial" && result.state !== "completed") {
+        const cancelledIndices: number[] = [];
+        for (let i = 0; i < entry.tasks.length; i++) {
+          const t = entry.tasks[i];
+          if (t.state === "pending") {
+            entry.tasks[i] = {
+              ...t,
+              state: "cancelled",
+              exitCode: t.exitCode ?? 1,
+              error: t.error ?? "cancelled (upstream resume did not succeed)",
+            };
+            cancelledIndices.push(i);
+          }
+        }
+        for (const idx of cancelledIndices) {
+          notifyTaskTerminal(own.orchestrationId, idx, "cancelled");
+        }
+        tryFinalize(entry);
+        return;
+      }
+
+      // (3) Serial success: fire continuation callback.
+      if (wasPausedByBlock && result.state === "completed" && entry.continuation) {
+        entry.continuation({
+          orchestrationId: entry.id,
+          taskIndex: own.taskIndex,
+          resumedResult: result,
+        });
+      }
     },
 
     getAbortSignal(orchestrationId) {
