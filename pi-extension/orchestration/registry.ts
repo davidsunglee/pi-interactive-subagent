@@ -101,13 +101,21 @@ function newHexId(): string {
   return randomBytes(4).toString("hex");
 }
 
-function isTerminalState(s: OrchestrationState): boolean {
+function isTerminalState(s: OrchestrationState): s is "completed" | "failed" | "cancelled" {
   return s === "completed" || s === "failed" || s === "cancelled";
 }
 
 export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {}): Registry {
   const entries = new Map<string, OrchestrationEntry>();
   const ownership = new Map<string, { orchestrationId: string; taskIndex: number }>();
+
+  function safeEmit(payload: RegistryEmission): void {
+    try {
+      emit(payload);
+    } catch {
+      // Defensive: emitter errors must not break registry state transitions.
+    }
+  }
 
   function notifyTaskTerminal(orchestrationId: string, taskIndex: number, state: OrchestrationState): void {
     try {
@@ -123,7 +131,7 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
     if (!allTerminal) return;
     entry.overallState = "completed";
     const isError = entry.tasks.some((t) => t.state !== "completed");
-    emit({
+    safeEmit({
       kind: ORCHESTRATION_COMPLETE_KIND,
       orchestrationId: entry.id,
       results: entry.tasks.map((t) => ({ ...t })),
@@ -181,7 +189,7 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
 
     onTaskTerminal(orchestrationId, taskIndex, result) {
       const entry = entries.get(orchestrationId);
-      if (!entry) return;
+      if (!entry || entry.overallState !== "running") return;
       const existing = entry.tasks[taskIndex];
       if (!existing) return;
       // Merge: keep pre-terminal sessionKey / name if missing in result.
@@ -203,23 +211,24 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
 
     onTaskBlocked(orchestrationId, taskIndex, payload) {
       const entry = entries.get(orchestrationId);
-      if (!entry) return;
+      if (!entry || entry.overallState !== "running") return;
       const existing = entry.tasks[taskIndex];
       if (!existing) return;
-      entry.tasks[taskIndex] = {
+      const merged: OrchestratedTaskResult = {
         ...existing,
         ...(payload.partial ?? {}),
         state: "blocked",
         sessionKey: payload.sessionKey,
         index: taskIndex,
       };
+      entry.tasks[taskIndex] = merged;
       entry.sessionKeys.set(taskIndex, payload.sessionKey);
       ownership.set(payload.sessionKey, { orchestrationId, taskIndex });
-      emit({
+      safeEmit({
         kind: BLOCKED_KIND,
         orchestrationId,
         taskIndex,
-        taskName: entry.tasks[taskIndex].name,
+        taskName: merged.name,
         sessionKey: payload.sessionKey,
         message: payload.message,
       });

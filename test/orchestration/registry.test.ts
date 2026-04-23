@@ -1,4 +1,4 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createRegistry, type RegistryEmitter } from "../../pi-extension/orchestration/registry.ts";
 import type { OrchestratedTaskResult } from "../../pi-extension/orchestration/types.ts";
@@ -269,5 +269,72 @@ describe("createRegistry", () => {
     reg.onResumeStarted("sess-a");
     assert.equal(reg.getSnapshot(id)!.tasks[0].state, "running");
     assert.equal(resumeStarts.length, 0);
+  });
+
+  it("throwing emitter during tryFinalize does not propagate and state transition lands", () => {
+    const throwingEmitter: RegistryEmitter = () => { throw new Error("emitter exploded"); };
+    const reg = createRegistry(throwingEmitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    // Must not throw even though the emitter throws.
+    assert.doesNotThrow(() => {
+      reg.onTaskTerminal(id, 0, {
+        name: "a", index: 0, state: "completed", exitCode: 0, elapsedMs: 1,
+      });
+    });
+    // State transition still lands correctly.
+    assert.equal(reg.getSnapshot(id)!.tasks[0].state, "completed");
+  });
+
+  it("throwing emitter during onTaskBlocked does not propagate and state transition lands", () => {
+    const throwingEmitter: RegistryEmitter = () => { throw new Error("emitter exploded"); };
+    const reg = createRegistry(throwingEmitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    // Must not throw even though the emitter throws.
+    assert.doesNotThrow(() => {
+      reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "need input" });
+    });
+    // State transition still lands correctly.
+    assert.equal(reg.getSnapshot(id)!.tasks[0].state, "blocked");
+  });
+
+  it("onTaskTerminal after orchestration finalization is a no-op", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    reg.onTaskTerminal(id, 0, {
+      name: "a", index: 0, state: "completed", exitCode: 0, elapsedMs: 1,
+    });
+    assert.equal(emitted.length, 1, "one completion event emitted");
+    // Late callback: simulate a race with a second terminal call after finalization.
+    reg.onTaskTerminal(id, 0, {
+      name: "a", index: 0, state: "failed", exitCode: 1, elapsedMs: 2, error: "late",
+    });
+    assert.equal(emitted.length, 1, "no duplicate event");
+    assert.equal(reg.getSnapshot(id)!.tasks[0].state, "completed", "original state preserved");
+  });
+
+  it("onTaskBlocked after orchestration finalization is a no-op", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "parallel", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskLaunched(id, 0, { sessionKey: "sess-a" });
+    // cancel() finalizes the orchestration by marking all tasks as cancelled.
+    reg.cancel(id);
+    assert.equal(emitted.length, 1, "one completion event emitted by cancel");
+    // Late callback: onTaskBlocked on a slot that is now cancelled.
+    reg.onTaskBlocked(id, 0, { sessionKey: "sess-a", message: "too late" });
+    assert.equal(emitted.length, 1, "no second event emitted");
+    assert.equal(reg.getSnapshot(id)!.tasks[0].state, "cancelled", "slot remains cancelled");
   });
 });
