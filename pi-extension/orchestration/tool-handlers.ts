@@ -141,7 +141,7 @@ export function registerOrchestrationTools(
   }
 }
 
-function toPublicResults(results: OrchestrationResult[]): OrchestratedTaskResult[] {
+export function toPublicResults(results: OrchestrationResult[]): OrchestratedTaskResult[] {
   return results.map((r, i) => ({
     name: r.name,
     index: r.index ?? i,

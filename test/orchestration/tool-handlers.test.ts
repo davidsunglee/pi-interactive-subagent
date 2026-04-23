@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { registerOrchestrationTools } from "../../pi-extension/orchestration/tool-handlers.ts";
-import type { LauncherDeps } from "../../pi-extension/orchestration/types.ts";
+import { registerOrchestrationTools, toPublicResults } from "../../pi-extension/orchestration/tool-handlers.ts";
+import type { LauncherDeps, OrchestrationResult } from "../../pi-extension/orchestration/types.ts";
 
 function createMockApi() {
   const tools: any[] = [];
@@ -327,5 +327,84 @@ describe("registerOrchestrationTools", () => {
     assert.equal(launched, 0);
     assert.match(out.content[0].text, /worker agent/);
     assert.equal(out.details.error, "self-spawn blocked");
+  });
+});
+
+describe("toPublicResults", () => {
+  it("falls back state to 'completed' when r.state is missing and exitCode===0 with no error", () => {
+    const input: OrchestrationResult[] = [
+      {
+        name: "task-a",
+        finalMessage: "done",
+        transcriptPath: null,
+        exitCode: 0,
+        elapsedMs: 10,
+        // state intentionally omitted — exercises fallback branch 1
+      },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].state, "completed");
+    assert.equal(out[0].index, 0);
+    assert.equal(out[0].name, "task-a");
+  });
+
+  it("falls back state to 'failed' when r.state is missing and exitCode!==0", () => {
+    const input: OrchestrationResult[] = [
+      {
+        name: "task-b",
+        finalMessage: "",
+        transcriptPath: null,
+        exitCode: 1,
+        elapsedMs: 5,
+        // state intentionally omitted — exercises fallback branch 2
+      },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].state, "failed");
+  });
+
+  it("falls back state to 'failed' when r.state is missing and error is set (exitCode===0)", () => {
+    const input: OrchestrationResult[] = [
+      {
+        name: "task-c",
+        finalMessage: "",
+        transcriptPath: null,
+        exitCode: 0,
+        elapsedMs: 5,
+        error: "something went wrong",
+        // state intentionally omitted — exercises fallback branch 2 (error present)
+      },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].state, "failed");
+  });
+
+  it("falls back index to map position i when r.index is missing", () => {
+    const input: OrchestrationResult[] = [
+      { name: "t0", finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 },
+      { name: "t1", finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 },
+      { name: "t2", finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].index, 0);
+    assert.equal(out[1].index, 1);
+    assert.equal(out[2].index, 2);
+  });
+
+  it("uses r.state and r.index when both are already set (no fallback needed)", () => {
+    const input: OrchestrationResult[] = [
+      {
+        name: "task-d",
+        finalMessage: "ok",
+        transcriptPath: null,
+        exitCode: 0,
+        elapsedMs: 7,
+        state: "cancelled",
+        index: 5,
+      },
+    ];
+    const out = toPublicResults(input);
+    assert.equal(out[0].state, "cancelled");
+    assert.equal(out[0].index, 5);
   });
 });

@@ -89,17 +89,15 @@ export async function runParallel(
       } catch (err: any) {
         result = {
           name: task.name!,
-          index: i,
           finalMessage: "",
           transcriptPath: null,
           exitCode: 1,
           elapsedMs: Date.now() - startedAt,
           error: err?.message ?? String(err),
-          state: "failed",
         };
       }
       result.index = i;
-      result.state = result.exitCode === 0 && !result.error ? "completed" : (result.state ?? "failed");
+      result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
       results[i] = result;
       if (result.exitCode !== 0 || result.error) {
         isError = true;

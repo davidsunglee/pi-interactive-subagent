@@ -301,10 +301,10 @@ describe("runSerial state + index annotation", () => {
       {},
       deps,
     );
-    assert.equal((out.results[0] as any).state, "completed");
-    assert.equal((out.results[0] as any).index, 0);
-    assert.equal((out.results[1] as any).state, "completed");
-    assert.equal((out.results[1] as any).index, 1);
+    assert.equal(out.results[0].state, "completed");
+    assert.equal(out.results[0].index, 0);
+    assert.equal(out.results[1].state, "completed");
+    assert.equal(out.results[1].index, 1);
   });
 
   it("annotates failing step with state: 'failed'", async () => {
@@ -317,8 +317,8 @@ describe("runSerial state + index annotation", () => {
       {},
       deps,
     );
-    assert.equal((out.results[0] as any).state, "completed");
-    assert.equal((out.results[1] as any).state, "failed");
+    assert.equal(out.results[0].state, "completed");
+    assert.equal(out.results[1].state, "failed");
   });
 
   it("annotates cancelled step with state: 'cancelled'", async () => {
@@ -330,6 +330,6 @@ describe("runSerial state + index annotation", () => {
       { signal: ac.signal },
       deps,
     );
-    assert.equal((out.results[0] as any).state, "cancelled");
+    assert.equal(out.results[0].state, "cancelled");
   });
 });
