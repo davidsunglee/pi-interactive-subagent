@@ -112,8 +112,8 @@ Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task)
 | `subagent`              | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately)           |
 | `subagents_list`        | List available agent definitions                                                          |
 | `subagent_resume`       | Resume a previous sub-agent session (async)                                               |
-| `subagent_run_serial`   | Run a pipeline of subagents in order (blocks; `{previous}` substitution; `wait: false` for async) |
-| `subagent_run_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8; `wait: false` for async) |
+| `subagent_run_serial`   | Run a pipeline of subagents in order (blocks; `{previous}` substitution; `wait: false` for async — tasks may enter `blocked` state when child calls `caller_ping`) |
+| `subagent_run_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8; `wait: false` for async — tasks may enter `blocked` state when child calls `caller_ping`) |
 | `subagent_run_cancel`   | Cancel an async orchestration by id (idempotent on already-terminal runs).                |
 
 | Command                    | Description                          |
@@ -306,6 +306,23 @@ await caller_ping({
 ```
 
 > **Note:** `caller_ping` is only available inside subagent contexts. Calling it from a standalone pi session returns an error.
+
+### caller_ping inside async orchestration
+
+When a child spawned through `subagent_run_serial` / `subagent_run_parallel` (with `wait: false`) calls `caller_ping`, the task transitions to a `blocked` state instead of completing:
+
+1. Orchestration emits a `blocked` steer-back with `{ orchestrationId, taskIndex, taskName, sessionKey, message }`. `sessionKey` is the session file path for pi-backed children (same value accepted by `subagent_resume({ sessionPath })`) or the Claude session id for Claude-backed children (accepted by `subagent_resume({ sessionId })`).
+2. Widget row for the task stays visible with a "blocked — awaiting parent" indicator. The row clears as soon as that specific task transitions to any terminal state (completed / failed / cancelled) OR as soon as a `subagent_resume` starts on the owning session — the task's state flips `blocked -> running` and the resumed pane's row takes over.
+3. Parent resumes the child via standalone `subagent_resume` using whichever identifier matches its backend (`sessionPath` for pi, `sessionId` for Claude; pass exactly one). Starting the resume transitions the orchestration slot `blocked -> running`. On terminal completion the result is re-ingested into the original orchestration. If the resumed child pings again, the orchestration re-blocks (recursive unblock loop supported).
+4. Serial runs resume from the next step using the resumed task's `finalMessage` as `{previous}`; parallel runs re-evaluate aggregation and fire completion once all slots are terminal.
+
+Cancelling a blocked task via `subagent_run_cancel` transitions it to `cancelled` without attempting resume.
+
+**v1 limitations:**
+- No depth limit on recursion (pinging child resumed, pings again).
+- Sync orchestrations (`wait: true` or omitted) continue today's behavior: `caller_ping` closes the pane and the task is recorded as `completed` with the ping message as `finalMessage`.
+- No disk persistence of registry / ownership map: a pi crash or `/reload` kills live async runs silently.
+- `subagent_resume` requires a mux backend for both `sessionPath` and `sessionId` paths in v1; without one it returns the standard mux-unavailable result.
 
 ---
 

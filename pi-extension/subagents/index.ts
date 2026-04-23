@@ -505,6 +505,8 @@ export const __test__ = {
   // Task 13: widget introspection for tests.
   getRunningSubagents() { return runningSubagents; },
   getVirtualBlocked() { return virtualBlocked; },
+  // Step 14.2d: capture the last launch command for Claude-branch tests.
+  getLastLaunchCommand(): string | null { return lastLaunchCommand; },
 };
 
 function startWidgetRefresh() {
@@ -1082,6 +1084,7 @@ let surfaceOverrides: {
   createSurface?: (name: string) => string;
   sendLongCommand?: (surface: string, command: string) => void;
 } | null = null;
+let lastLaunchCommand: string | null = null;
 
 // Module-scope forward-declared so the registry can be reset via __test__.
 // `piForRegistry` is the ExtensionAPI assigned when subagentsExtension runs;
@@ -1709,6 +1712,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
 
         // 6. Dispatch.
+        lastLaunchCommand = command;
         if (surfaceOverrides?.sendLongCommand) {
           surfaceOverrides.sendLongCommand(surface, command);
         } else {
