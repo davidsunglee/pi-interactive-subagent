@@ -112,3 +112,32 @@ describe("plugin-mcp pi-subagent server", { skip: SHOULD_SKIP }, () => {
     });
   });
 });
+
+describe("plugin manifests", () => {
+  const PLUGIN_ROOT = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..", "pi-extension", "subagents", "plugin",
+  );
+
+  it(".claude-plugin/plugin.json exists and parses with required keys", () => {
+    const path = join(PLUGIN_ROOT, ".claude-plugin", "plugin.json");
+    assert.ok(existsSync(path), `${path} must exist`);
+    const j = JSON.parse(readFileSync(path, "utf-8"));
+    assert.equal(typeof j.name, "string");
+    assert.ok(j.name.length > 0);
+  });
+
+  it(".mcp.json declares exactly one server named pi-subagent invoking node mcp/server.js", () => {
+    const path = join(PLUGIN_ROOT, ".mcp.json");
+    assert.ok(existsSync(path), `${path} must exist`);
+    const j = JSON.parse(readFileSync(path, "utf-8"));
+    assert.ok(j.mcpServers, ".mcp.json must have mcpServers");
+    const names = Object.keys(j.mcpServers);
+    assert.deepEqual(names, ["pi-subagent"]);
+    const srv = j.mcpServers["pi-subagent"];
+    assert.equal(srv.command, "node");
+    assert.ok(Array.isArray(srv.args));
+    const argStr = srv.args.join(" ");
+    assert.match(argStr, /mcp\/server\.js/);
+  });
+});

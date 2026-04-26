@@ -1,5 +1,5 @@
 {
-  "name": "pi-auto-exit",
+  "name": "pi-subagent",
   "version": "1.0.0",
-  "description": "Auto-exit plugin for pi-spawned Claude sessions"
+  "description": "Bundled plugin for pi-spawned Claude pane subagents — provides the Stop hook for transcript surfacing and the subagent_done MCP tool for explicit completion signaling."
 }
