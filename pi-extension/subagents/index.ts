@@ -559,6 +559,12 @@ export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
   if (input.resumeSessionId) {
     parts.push("--resume", shellEscape(input.resumeSessionId));
   }
+  // The MCP tool `mcp__pi-subagent__subagent_done` is the unified completion
+  // signal on the Claude pane backend. Whenever we emit a restrictive --tools
+  // list, the MCP tool MUST be present alongside any mapped builtins so the
+  // model can actually call it (symmetric to how resolvePiToolsArg always
+  // reserves caller_ping,subagent_done on the pi path).
+  const MCP_LIFECYCLE_TOOL = "mcp__pi-subagent__subagent_done";
   if (input.effectiveTools) {
     const claudeTools = new Set<string>();
     for (const tool of input.effectiveTools
@@ -568,9 +574,8 @@ export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
       const mapped = PI_TO_CLAUDE_TOOLS[tool.toLowerCase()];
       if (mapped) claudeTools.add(mapped);
     }
-    if (claudeTools.size > 0) {
-      parts.push("--tools", shellEscape([...claudeTools].join(",")));
-    }
+    claudeTools.add(MCP_LIFECYCLE_TOOL);
+    parts.push("--tools", shellEscape([...claudeTools].join(",")));
   }
   if (input.task !== "") {
     parts.push("--");
