@@ -867,6 +867,35 @@ const CLAUDE_SESSIONS_DIR = join(
 );
 
 /**
+ * Parse a Claude JSONL transcript and return the text of the last assistant
+ * message. Used as a fallback summary when the sentinel file is empty (model
+ * called `subagent_done` with omitted/empty `message`) — more reliable than a
+ * pane screen-scrape because the transcript is the authoritative artifact
+ * `copyClaudeSession` is about to archive. Returns "" on any parse failure.
+ */
+export function extractLastAssistantMessage(jsonl: string): string {
+  let last = "";
+  for (const line of jsonl.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const entry = JSON.parse(trimmed);
+      if (entry?.type !== "assistant") continue;
+      const content = entry?.message?.content;
+      if (typeof content === "string") {
+        last = content;
+      } else if (Array.isArray(content)) {
+        last = content
+          .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+          .map((b: any) => b.text)
+          .join("");
+      }
+    } catch { /* skip malformed line */ }
+  }
+  return last;
+}
+
+/**
  * Archive the pane-Claude transcript and return the raw session id + archived
  * path. The session id is the `.jsonl` filename stripped of its extension so
  * it matches the raw id the headless Claude backend extracts from `system/init`
@@ -958,29 +987,32 @@ export async function watchSubagent(
       // missed it.
       maybeFire(readClaudeSessionId());
 
-      // Claude Code result extraction
-      let summary = "";
-
-      if (running.sentinelFile) {
-        try {
-          summary = readFileSync(running.sentinelFile, "utf-8").trim();
-        } catch {}
+      // Bounded wait for the .transcript pointer so one-turn autonomous
+      // sessions don't lose transcript/session metadata. The MCP sentinel
+      // (written by subagent_done) and the .transcript pointer (written by
+      // the Stop hook) are independent events; in autonomous one-turn
+      // completions the MCP write can finish before the Stop hook fires.
+      // Without this wait, copyClaudeSession would observe a missing pointer
+      // and return null, dropping transcriptPath / sessionId on the floor.
+      //
+      // Gate the wait narrowly: only when the sentinel file actually exists
+      // AND its .transcript pointer is missing. Manual-exit and abort paths
+      // never write the sentinel, so this wait is bypassed entirely there
+      // (keeping cancel/close snappy). pollForExit's contract is unchanged.
+      if (running.sentinelFile && existsSync(running.sentinelFile)) {
+        const pointer = running.sentinelFile + ".transcript";
+        if (!existsSync(pointer)) {
+          const deadline = Date.now() + 2000;
+          while (!existsSync(pointer) && Date.now() < deadline) {
+            await new Promise((res) => setTimeout(res, 50));
+          }
+        }
       }
 
-      if (!summary) {
-        summary = readScreen(surface, 200)
-          .replace(/__SUBAGENT_DONE_\d+__/, "")
-          .trimEnd();
-      }
-
-      if (!summary) {
-        summary = result.exitCode !== 0
-          ? `Claude Code exited with code ${result.exitCode}`
-          : "Claude Code exited without output";
-      }
-
-      // Archive Claude session transcript; compute archived path BEFORE unlinking
-      // the sentinel + pointer files (cleanup erases the source path we need).
+      // Archive Claude session transcript first so the JSONL fallback below
+      // has an authoritative artifact to read from. Cleanup of the sentinel +
+      // pointer files happens after summary extraction (cleanup unlinks the
+      // pointer file, so we must read through it BEFORE unlinking).
       let sessionId: string | null = null;
       let transcriptPath: string | null = null;
       if (running.sentinelFile) {
@@ -989,6 +1021,40 @@ export async function watchSubagent(
           sessionId = archived.sessionId;
           transcriptPath = archived.archivedPath;
         }
+      }
+
+      let summary = "";
+
+      // 1. Sentinel file (preferred): non-empty content from subagent_done.
+      if (running.sentinelFile) {
+        try { summary = readFileSync(running.sentinelFile, "utf-8").trim(); }
+        catch {}
+      }
+
+      // 2. Transcript JSONL last assistant message — more reliable than the
+      //    screen scrape, available whenever we successfully archived.
+      if (!summary && transcriptPath) {
+        try {
+          summary = extractLastAssistantMessage(readFileSync(transcriptPath, "utf-8")).trim();
+        } catch {}
+      }
+
+      // 3. Pane screen scrape — last-resort fallback.
+      if (!summary) {
+        summary = readScreen(surface, 200)
+          .replace(/__SUBAGENT_DONE_\d+__/, "")
+          .trimEnd();
+      }
+
+      // 4. Generic exit-code fallback string.
+      if (!summary) {
+        summary = result.exitCode !== 0
+          ? `Claude Code exited with code ${result.exitCode}`
+          : "Claude Code exited without output";
+      }
+
+      // Cleanup the sentinel + pointer files now that we've extracted everything.
+      if (running.sentinelFile) {
         try { unlinkSync(running.sentinelFile); } catch {}
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
