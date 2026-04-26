@@ -14,5 +14,6 @@
     "noImplicitAny": false,
     "types": ["node"]
   },
-  "include": ["mcp/**/*.ts"]
+  "include": ["mcp/**/*.ts"],
+  "exclude": []
 }
