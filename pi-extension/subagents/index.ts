@@ -684,9 +684,17 @@ export async function launchSubagent(
       // Claude CLI receives a provider-stripped model string. Pane + headless
       // backends agree here via spec.claudeModelArg.
       model: spec.claudeModelArg,
-      // Identity reaches Claude via the system-prompt flag only. agentDefs.body
-      // wins over params.systemPrompt — see review-v11 finding 1 regression test.
-      identity: spec.identity,
+      // Fold claudeCompletionAddendum into the identity passed to
+      // buildClaudeCmdParts so it always reaches Claude via
+      // --append-system-prompt — even when spec.identity is null/empty. Fold
+      // rule: identity → blank-line separator → addendum. With null identity,
+      // the addendum is the sole content.
+      identity: (() => {
+        const addendum = spec.claudeCompletionAddendum;
+        if (!addendum) return spec.identity;
+        if (!spec.identity) return addendum;
+        return `${spec.identity}\n\n${addendum}`;
+      })(),
       systemPromptMode: spec.systemPromptMode,
       resumeSessionId: spec.resumeSessionId,
       effectiveThinking: spec.effectiveThinking,
