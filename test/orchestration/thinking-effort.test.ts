@@ -123,7 +123,13 @@ describe("buildClaudeCmdParts", () => {
     assert.equal(parts.includes("--allowedTools"), false);
   });
 
-  it("omits --tools when every effectiveTools entry is unmapped (no --tools '' emission)", () => {
+  it("emits --tools with both lifecycle MCP tool names when every effectiveTools entry is unmapped", () => {
+    // Spec change (Task 6): whenever effectiveTools is set we emit --tools
+    // with both lifecycle MCP tool names included (bare + plugin-namespaced)
+    // so completion is allowlisted regardless of which MCP loading path
+    // Claude uses (review-v1 finding 1). With zero recognized builtins, the
+    // list is just those two names (NOT empty — an empty list would mean
+    // "no tools allowed").
     const parts = buildClaudeCmdParts({
       sentinelFile: "/tmp/s",
       pluginDir: undefined,
@@ -135,8 +141,18 @@ describe("buildClaudeCmdParts", () => {
       effectiveTools: "weird, nonexistent",
       task: "do things",
     });
-    assert.equal(parts.includes("--tools"), false,
-      "all-unmapped input must skip --tools entirely; emitting --tools with an empty list would mean 'no tools allowed' — a very different semantic");
+    const idx = parts.indexOf("--tools");
+    assert.notEqual(idx, -1, "--tools must be emitted so the MCP lifecycle tool is allowlisted");
+    const arg = parts[idx + 1].replace(/^'|'$/g, "");
+    const tools = arg.split(",").sort();
+    assert.deepEqual(
+      tools,
+      [
+        "mcp__pi-subagent__subagent_done",
+        "mcp__plugin_pi-subagent_pi-subagent__subagent_done",
+      ].sort(),
+      "with no mapped builtins, --tools must contain exactly both lifecycle MCP tool names",
+    );
   });
 
   it("treats systemPromptMode=\"append\" the same as undefined (explicit append is still --append-system-prompt)", () => {

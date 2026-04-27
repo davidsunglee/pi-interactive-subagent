@@ -140,6 +140,13 @@ export interface ResolvedLaunchSpec {
   artifactDir: string;
 
   autoExit: boolean;
+  /**
+   * Claude-only system-prompt addendum that ends with a `subagent_done`
+   * instruction. Populated only on the Claude pane path (`effectiveCli ===
+   * "claude"`); null on every other path. The pane launch site folds this
+   * into the `identity` value passed to `buildClaudeCmdParts`.
+   */
+  claudeCompletionAddendum: string | null;
   denySet: Set<string>;
   resumeSessionId: string | undefined;
   focus: boolean | undefined;
@@ -455,6 +462,30 @@ function safeFileName(raw: string, fallback: string): string {
   );
 }
 
+/**
+ * Build the Claude pane completion-instruction addendum that reaches Claude
+ * via `--append-system-prompt`. The text varies on `autoExit` to set
+ * expectations about user interaction. Both forms end with the same explicit
+ * `subagent_done` instruction — that tool is the unified completion path on
+ * the Claude pane backend (see docs/superpowers/specs/2026-04-26-claude-pane-interactive-subagents-design.md).
+ */
+export function buildClaudeCompletionAddendum(autoExit: boolean): string {
+  if (autoExit) {
+    return (
+      "You are a one-shot subagent. Complete your task autonomously without " +
+      "asking the user questions. When finished, your FINAL assistant message " +
+      "should summarize what you accomplished, then call `subagent_done` to " +
+      "end the session."
+    );
+  }
+  return (
+    "You are an interactive subagent. The user can type into this pane at any " +
+    "time — feel free to ask clarifying questions as many times as needed. " +
+    "When the task is complete, your FINAL assistant message should summarize " +
+    "what you accomplished, then call `subagent_done` to end the session."
+  );
+}
+
 // ── Main entry point ───────────────────────────────────────────────────────
 
 /**
@@ -597,6 +628,10 @@ export function resolveLaunchSpec(
     artifactDir,
 
     autoExit: agentDefs?.autoExit === true,
+    claudeCompletionAddendum:
+      effectiveCli === "claude"
+        ? buildClaudeCompletionAddendum(agentDefs?.autoExit === true)
+        : null,
     denySet,
     resumeSessionId: params.resumeSessionId,
     focus: params.focus,
