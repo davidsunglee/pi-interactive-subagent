@@ -40,4 +40,41 @@ describe("extractLastAssistantMessage", () => {
     assert.equal(extractLastAssistantMessage("not json\n{also bad"), "");
     assert.equal(extractLastAssistantMessage(""), "");
   });
+
+  it("preserves the prior textual summary when the last assistant entry is tool-use-only (review-v1 finding 3)", () => {
+    // Real Claude transcripts often look like: assistant emits a summary in
+    // one entry, then emits a separate assistant entry that is purely the
+    // subagent_done tool_use. The fallback must return the summary, not "".
+    const jsonl = [
+      JSON.stringify({ type: "user", message: { role: "user", content: "go" } }),
+      JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: "SPEC_WRITTEN: /tmp/spec.md" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "t1", name: "subagent_done", input: {} },
+          ],
+        },
+      }),
+    ].join("\n");
+    assert.equal(extractLastAssistantMessage(jsonl), "SPEC_WRITTEN: /tmp/spec.md");
+  });
+
+  it("preserves the prior summary when a later assistant entry has empty/whitespace text", () => {
+    const jsonl = [
+      JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: "real summary" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "   " }] },
+      }),
+    ].join("\n");
+    assert.equal(extractLastAssistantMessage(jsonl), "real summary");
+  });
 });

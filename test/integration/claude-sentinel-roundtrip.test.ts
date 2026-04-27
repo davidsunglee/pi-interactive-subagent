@@ -11,6 +11,7 @@ import {
   createTestEnv,
   cleanupTestEnv,
   PI_TIMEOUT,
+  SLOW_LANE_OPT_IN,
   type TestEnv,
 } from "./harness.ts";
 import { launchSubagent, watchSubagent } from "../../pi-extension/subagents/index.ts";
@@ -29,12 +30,17 @@ const PLUGIN_DIR = join(
 const PLUGIN_PRESENT = existsSync(join(PLUGIN_DIR, "hooks", "on-stop.sh"));
 const backends = getAvailableBackends();
 
-const SHOULD_SKIP = !CLAUDE_AVAILABLE || !PLUGIN_PRESENT || backends.length === 0;
+// Slow-lane gated: this test launches a real Claude pane and waits for the
+// model to call subagent_done, which spends tokens and minutes of wall time
+// (review-v1 finding 2). Default `npm run test:integration` should not pay
+// that cost; PI_RUN_SLOW=1 opts in via test:integration:slow.
+const SHOULD_SKIP =
+  !CLAUDE_AVAILABLE || !PLUGIN_PRESENT || backends.length === 0 || !SLOW_LANE_OPT_IN;
 
 if (SHOULD_SKIP) {
   console.log(
     "⚠️  claude-sentinel-roundtrip skipped: " +
-      `CLAUDE=${CLAUDE_AVAILABLE} PLUGIN=${PLUGIN_PRESENT} BACKENDS=${backends.length}`,
+      `CLAUDE=${CLAUDE_AVAILABLE} PLUGIN=${PLUGIN_PRESENT} BACKENDS=${backends.length} SLOW=${SLOW_LANE_OPT_IN}`,
   );
 }
 

@@ -93,16 +93,18 @@ For `auto-exit: false`:
 
 ### `--allowed-tools` injection
 
-`buildClaudeCmdParts` treats `effectiveTools` as an explicit restriction request. When `effectiveTools` is unset, no `--tools` flag is emitted and Claude's default allowlist permits MCP tools. When `effectiveTools` is set, `buildClaudeCmdParts` must emit `--tools <list>` and the list must always include `mcp__pi-subagent__subagent_done`.
+`buildClaudeCmdParts` treats `effectiveTools` as an explicit restriction request. When `effectiveTools` is unset, no `--tools` flag is emitted and Claude's default allowlist permits MCP tools. When `effectiveTools` is set, `buildClaudeCmdParts` must emit `--tools <list>` and the list must always include both lifecycle MCP tool names (see below).
 
 Tool-list construction:
 
 1. Map requested pi tool names to Claude built-in tool names via `PI_TO_CLAUDE_TOOLS`.
-2. Add `mcp__pi-subagent__subagent_done` unconditionally.
+2. Add both lifecycle MCP tool names unconditionally:
+   - `mcp__pi-subagent__subagent_done` — bare form exposed by the `--mcp-config` fallback path.
+   - `mcp__plugin_pi-subagent_pi-subagent__subagent_done` — plugin-namespaced form exposed by the `--plugin-dir` path (Claude's `mcp__plugin_<plugin>_<server>__<tool>` convention; both `<plugin>` and `<server>` happen to be `pi-subagent`).
 3. De-duplicate while preserving deterministic order.
-4. Emit `--tools` even when step 1 produced no mapped builtins; in that case the emitted list contains only `mcp__pi-subagent__subagent_done`.
+4. Emit `--tools` even when step 1 produced no mapped builtins; in that case the emitted list contains only those two MCP tool names.
 
-This stronger rule is intentional. A restrictive allowlist containing only pi tool names that Claude cannot map must not silently omit `--tools` or emit an allowlist that lacks the completion MCP tool; either behavior can recreate the original hang path by making `subagent_done` unavailable.
+This stronger rule is intentional. A restrictive allowlist containing only pi tool names that Claude cannot map must not silently omit `--tools` or emit an allowlist that lacks the completion MCP tools; either behavior can recreate the original hang path by making `subagent_done` unavailable. Both names are listed because the actual exposed tool name depends on which MCP loading path Claude used, and an allowlist that contains only the bare form silently disables completion under `--plugin-dir` (review-v1 finding 1).
 
 ### Watcher impact
 

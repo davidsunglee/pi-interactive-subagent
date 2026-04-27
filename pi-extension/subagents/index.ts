@@ -559,12 +559,27 @@ export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
   if (input.resumeSessionId) {
     parts.push("--resume", shellEscape(input.resumeSessionId));
   }
-  // The MCP tool `mcp__pi-subagent__subagent_done` is the unified completion
-  // signal on the Claude pane backend. Whenever we emit a restrictive --tools
-  // list, the MCP tool MUST be present alongside any mapped builtins so the
-  // model can actually call it (symmetric to how resolvePiToolsArg always
-  // reserves caller_ping,subagent_done on the pi path).
-  const MCP_LIFECYCLE_TOOL = "mcp__pi-subagent__subagent_done";
+  // The lifecycle MCP tool is the unified completion signal on the Claude
+  // pane backend. Whenever we emit a restrictive --tools list, the MCP tool
+  // MUST be present alongside any mapped builtins so the model can actually
+  // call it (symmetric to how resolvePiToolsArg always reserves
+  // caller_ping,subagent_done on the pi path).
+  //
+  // Two names are allowlisted because the loaded tool's exposed name depends
+  // on how the MCP server was discovered:
+  //   - --plugin-dir: Claude namespaces the tool as
+  //     `mcp__plugin_<plugin-name>_<server-name>__<tool>`, here
+  //     `mcp__plugin_pi-subagent_pi-subagent__subagent_done`.
+  //   - --mcp-config (fallback path documented in the spec): Claude exposes
+  //     the bare `mcp__<server>__<tool>` form, here
+  //     `mcp__pi-subagent__subagent_done`.
+  // Including both keeps the allowlist correct for either loading path; an
+  // allowlist that only contains the bare name silently disables completion
+  // when the plugin is loaded via --plugin-dir (review-v1 finding 1).
+  const MCP_LIFECYCLE_TOOLS = [
+    "mcp__pi-subagent__subagent_done",
+    "mcp__plugin_pi-subagent_pi-subagent__subagent_done",
+  ];
   if (input.effectiveTools) {
     const claudeTools = new Set<string>();
     for (const tool of input.effectiveTools
@@ -574,7 +589,7 @@ export function buildClaudeCmdParts(input: ClaudeCmdInputs): string[] {
       const mapped = PI_TO_CLAUDE_TOOLS[tool.toLowerCase()];
       if (mapped) claudeTools.add(mapped);
     }
-    claudeTools.add(MCP_LIFECYCLE_TOOL);
+    for (const t of MCP_LIFECYCLE_TOOLS) claudeTools.add(t);
     parts.push("--tools", shellEscape([...claudeTools].join(",")));
   }
   if (input.task !== "") {
@@ -882,14 +897,21 @@ export function extractLastAssistantMessage(jsonl: string): string {
       const entry = JSON.parse(trimmed);
       if (entry?.type !== "assistant") continue;
       const content = entry?.message?.content;
+      // Only update `last` when this entry actually contributes text. A
+      // trailing assistant event that contains only `tool_use` blocks (e.g.
+      // the subagent_done call after a textual summary) would otherwise
+      // erase the prior summary with "" and force the watcher into the pane
+      // screen-scrape fallback (review-v1 finding 3).
+      let candidate = "";
       if (typeof content === "string") {
-        last = content;
+        candidate = content;
       } else if (Array.isArray(content)) {
-        last = content
+        candidate = content
           .filter((b: any) => b?.type === "text" && typeof b.text === "string")
           .map((b: any) => b.text)
           .join("");
       }
+      if (candidate.trim() !== "") last = candidate;
     } catch { /* skip malformed line */ }
   }
   return last;
