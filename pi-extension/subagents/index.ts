@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { keyHint } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { Box, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { dirname, join } from "node:path";
 import {
@@ -86,6 +86,13 @@ export type {
   AgentDefaults,
   ResolvedLaunchSpec,
   SubagentSessionMode,
+};
+
+type ResumeToolParams = {
+  sessionPath?: string;
+  sessionId?: string;
+  name?: string;
+  message?: string;
 };
 
 // Survive /reload: clear timers and abort poll loops from the previous module load.
@@ -1334,7 +1341,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         "Either wait for the steer message or move on to other work.",
       parameters: SubagentParams,
 
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      async execute(_toolCallId: string, params: SubagentParamsType, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
         const blocked = selfSpawnBlocked(params.agent);
         if (blocked) return blocked;
 
@@ -1599,7 +1606,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const text = first && first.type === "text" ? first.text : "";
         return new Text(theme.fg("dim", text), 0, 0);
       },
-    });
+    } as any);
 
   // ── subagents_list tool ──
   if (shouldRegister("subagents_list"))
@@ -1653,7 +1660,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         });
         return new Text(lines.join("\n"), 0, 0);
       },
-    });
+    } as any);
 
 
 
@@ -1711,7 +1718,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         return new Text(theme.fg("dim", text), 0, 0);
       },
 
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      async execute(_toolCallId: string, params: ResumeToolParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
         const name = params.name ?? "Resume";
         const startTime = Date.now();
 
@@ -1982,7 +1989,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           },
         };
       },
-    });
+    } as any);
 
   // /iterate command — fork the session into a subagent
   pi.registerCommand("iterate", {

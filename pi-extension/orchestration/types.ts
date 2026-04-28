@@ -1,5 +1,5 @@
-import type { Static, TObject } from "@sinclair/typebox";
-import { Type } from "@sinclair/typebox";
+import type { Static, TObject } from "typebox";
+import { Type } from "typebox";
 import type {
   TranscriptMessage,
   UsageStats,

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { Value } from "@sinclair/typebox/value";
+import * as Value from "typebox/value";
 import { OrchestrationTaskSchema } from "../../pi-extension/orchestration/types.ts";
 
 describe("interactive field is accepted and ignored (schema-level compat)", () => {

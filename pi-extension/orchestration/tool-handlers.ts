@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { runSerial } from "./run-serial.ts";
 import { runParallel } from "./run-parallel.ts";
 import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult, type OrchestrationTask } from "./types.ts";
@@ -73,6 +73,21 @@ const CancelParams = Type.Object({
   orchestrationId: Type.String({ description: "Orchestration id returned from a prior wait:false dispatch." }),
 });
 
+type SerialToolParams = {
+  tasks: OrchestrationTask[];
+  wait?: boolean;
+};
+
+type ParallelToolParams = {
+  tasks: OrchestrationTask[];
+  maxConcurrency?: number;
+  wait?: boolean;
+};
+
+type CancelToolParams = {
+  orchestrationId: string;
+};
+
 type ErrorResult = {
   content: Array<{ type: "text"; text: string }>;
   details: { error: string };
@@ -112,7 +127,7 @@ export function registerOrchestrationTools(
         "Run a sequence of subagent tasks in order. Each task's output is available to the next " +
         "as `{previous}`. Stops on first failure. Blocks until the sequence completes.",
       parameters: SerialParams,
-      async execute(_id, params, signal, _onUpdate, ctx) {
+      async execute(_id: string, params: SerialToolParams, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         for (const task of params.tasks) {
           const blocked = selfSpawn(task.agent);
           if (blocked) return blocked;
@@ -236,7 +251,7 @@ export function registerOrchestrationTools(
           };
         }
       },
-    });
+    } as any);
   }
 
   if (shouldRegister("subagent_run_parallel")) {
@@ -257,7 +272,7 @@ export function registerOrchestrationTools(
         "tasks complete. Partial failures are reported independently. Detached spawn is " +
         "tmux-only; other backends focus the new pane.",
       parameters: ParallelParams,
-      async execute(_id, params, signal, _onUpdate, ctx) {
+      async execute(_id: string, params: ParallelToolParams, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         for (const task of params.tasks) {
           const blocked = selfSpawn(task.agent);
           if (blocked) return blocked;
@@ -373,7 +388,7 @@ export function registerOrchestrationTools(
           };
         }
       },
-    });
+    } as any);
   }
 
   if (registry && shouldRegister("subagent_run_cancel")) {
@@ -387,7 +402,7 @@ export function registerOrchestrationTools(
       promptSnippet:
         "Cancel a running async orchestration by id. Idempotent on already-terminal runs.",
       parameters: CancelParams,
-      async execute(_id, params) {
+      async execute(_id: string, params: CancelToolParams) {
         const res = registry.cancel(params.orchestrationId);
         return {
           content: [{
@@ -399,7 +414,7 @@ export function registerOrchestrationTools(
           details: res,
         };
       },
-    });
+    } as any);
   }
 }
 

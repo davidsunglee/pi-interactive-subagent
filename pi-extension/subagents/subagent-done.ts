@@ -5,8 +5,10 @@
  */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Box, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { writeFileSync } from "node:fs";
+
+type CallerPingParams = { message: string };
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
@@ -158,7 +160,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       message: Type.String({ description: "What you need help with" }),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId: string, params: CallerPingParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
       if (!sessionFile) {
         throw new Error(
@@ -180,7 +182,7 @@ export default function (pi: ExtensionAPI) {
         details: {},
       };
     },
-  });
+  } as any);
 
   pi.registerTool({
     name: "subagent_done",
@@ -190,7 +192,7 @@ export default function (pi: ExtensionAPI) {
       "It will close this session and return your results to the main session. " +
       "Your LAST assistant message before calling this becomes the summary returned to the caller.",
     parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId: string, _params: Record<string, never>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
       if (sessionFile) {
         writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" }));
@@ -201,5 +203,5 @@ export default function (pi: ExtensionAPI) {
         details: {},
       };
     },
-  });
+  } as any);
 }
