@@ -1,7 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createRegistry, type RegistryEmitter } from "../../pi-extension/orchestration/registry.ts";
-import type { OrchestratedTaskResult } from "../../pi-extension/orchestration/types.ts";
 
 function makeEmitterSpy(): { emitter: RegistryEmitter; emitted: any[] } {
   const emitted: any[] = [];
@@ -218,7 +217,7 @@ describe("createRegistry", () => {
   });
 
   it("onResumeStarted transitions an owned blocked slot to running and fires the hook", () => {
-    const { emitter, emitted } = makeEmitterSpy();
+    const { emitter } = makeEmitterSpy();
     const resumeStarts: Array<{ orchestrationId: string; taskIndex: number }> = [];
     const reg = createRegistry(emitter, {
       onResumeStarted: (ctx) => { resumeStarts.push(ctx); },

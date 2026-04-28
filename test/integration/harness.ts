@@ -18,7 +18,7 @@ import {
   readFileSync,
   unlinkSync,
 } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
@@ -50,7 +50,6 @@ export type { MuxBackend };
 // ── Paths ──
 
 const HARNESS_DIR = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = resolve(HARNESS_DIR, "../..");
 const TEST_AGENTS_SRC = join(HARNESS_DIR, "agents");
 
 // ── Configuration ──

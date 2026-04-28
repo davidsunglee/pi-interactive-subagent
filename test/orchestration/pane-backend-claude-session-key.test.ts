@@ -24,7 +24,6 @@ function makeFakeCtx() {
 
 describe("makePaneBackend Claude sessionKey routing (review-v1 #1)", () => {
   it("Claude launch: LaunchedHandle.sessionKey is omitted (let onSessionKey late-bind it)", async () => {
-    let captured: any = null;
     const fakeRunning = {
       id: "id-claude",
       name: "n",
@@ -48,10 +47,9 @@ describe("makePaneBackend Claude sessionKey routing (review-v1 #1)", () => {
       { name: "n", task: "t", cli: "claude" },
       true,
     );
-    captured = handle;
 
     assert.equal(
-      captured.sessionKey,
+      handle.sessionKey,
       undefined,
       "Claude launch must NOT publish a sessionKey at launch time — it is late-bound via onSessionKey.",
     );

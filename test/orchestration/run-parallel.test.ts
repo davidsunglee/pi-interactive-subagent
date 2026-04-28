@@ -4,42 +4,6 @@ import { runParallel } from "../../pi-extension/orchestration/run-parallel.ts";
 import type { LauncherDeps, OrchestrationTask } from "../../pi-extension/orchestration/types.ts";
 import { MAX_PARALLEL_HARD_CAP } from "../../pi-extension/orchestration/types.ts";
 
-interface Spy {
-  deps: LauncherDeps;
-  maxInFlight: number;
-  launchOrder: string[];
-}
-
-function spyDeps(
-  results: Record<string, { finalMessage: string; exitCode?: number; delayMs?: number }>,
-): Spy {
-  let inFlight = 0;
-  let maxInFlight = 0;
-  const launchOrder: string[] = [];
-
-  const deps: LauncherDeps = {
-    async launch(task) {
-      inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      launchOrder.push(task.name!);
-      return { id: task.name!, name: task.name!, startTime: Date.now() };
-    },
-    async waitForCompletion(handle) {
-      const r = results[handle.name] ?? { finalMessage: "" };
-      await new Promise((res) => setTimeout(res, r.delayMs ?? 5));
-      inFlight--;
-      return {
-        name: handle.name,
-        finalMessage: r.finalMessage,
-        transcriptPath: null,
-        exitCode: r.exitCode ?? 0,
-        elapsedMs: 1,
-      };
-    },
-  };
-  return { deps, maxInFlight, launchOrder } as any; // maxInFlight read through closure
-}
-
 describe("runParallel", () => {
   it("respects maxConcurrency cap", async () => {
     let inFlight = 0;

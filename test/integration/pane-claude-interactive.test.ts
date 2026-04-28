@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   getAvailableBackends, setBackend, restoreBackend,
-  createTestEnv, cleanupTestEnv, sendCommand, sleep, waitForScreen,
+  createTestEnv, cleanupTestEnv, sendCommand, waitForScreen,
   PI_TIMEOUT, SLOW_LANE_OPT_IN,
   type TestEnv,
 } from "./harness.ts";

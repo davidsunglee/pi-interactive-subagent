@@ -16,12 +16,15 @@
   },
   "type": "module",
   "scripts": {
+    "lint": "eslint \"pi-extension/**/*.ts\" \"test/**/*.ts\"",
     "test": "node --test test/test.ts test/system-prompt-mode.test.ts test/plugin-mcp.test.ts test/plugin-stop-hook.test.ts test/orchestration/*.test.ts",
     "test:integration": "node --test test/integration/*.test.ts",
     "test:integration:slow": "PI_RUN_SLOW=1 node --test test/integration/orchestration-headless-async-backend.test.ts test/integration/orchestration-headless-block-backend.test.ts test/integration/orchestration-pane-async-backend.test.ts test/integration/orchestration-pane-block-backend.test.ts test/integration/claude-sentinel-roundtrip.test.ts test/integration/pane-claude-interactive.test.ts test/integration/orchestration-claude-pane-serial.test.ts test/integration/orchestration-claude-pane-parallel.test.ts test/integration/orchestration-claude-pane-spec-designer-e2e.test.ts",
     "test:plugin": "node --test test/plugin-mcp.test.ts",
     "typecheck": "tsc --noEmit",
-    "build:plugin": "tsc -p pi-extension/subagents/plugin"
+    "build:plugin": "tsc -p pi-extension/subagents/plugin",
+    "build": "npm run lint && npm run typecheck && npm run build:plugin",
+    "check": "npm run build && npm test"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
@@ -37,10 +40,13 @@
     ]
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@mariozechner/pi-coding-agent": "0.70.2",
     "@mariozechner/pi-tui": "0.70.2",
     "@types/node": "^25.6.0",
+    "eslint": "^10.2.1",
     "typebox": "^1.1.34",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.1"
   }
 }

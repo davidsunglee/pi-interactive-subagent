@@ -15,7 +15,7 @@ function hasCommand(command: string): boolean {
     return commandAvailability.get(command)!;
   }
 
-  let available = false;
+  let available: boolean;
   try {
     execSync(`command -v ${command}`, { stdio: "ignore" });
     available = true;
@@ -181,13 +181,6 @@ function zellijActionSync(args: string[], surface?: string): string {
   });
 }
 
-async function zellijActionAsync(args: string[], surface?: string): Promise<string> {
-  const { stdout } = await execFileAsync("zellij", zellijActionArgs(args, surface), {
-    encoding: "utf8",
-    env: zellijEnv(surface),
-  });
-  return stdout;
-}
 
 /** Tracked subagent pane for cmux — reused across subagent launches. */
 let cmuxSubagentPane: string | null = null;

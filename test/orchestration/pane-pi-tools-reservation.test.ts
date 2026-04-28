@@ -38,7 +38,7 @@ async function captureLaunchScript(
     const scriptsRoot = join(sessionDir, "artifacts");
     const found: string[] = [];
     const walk = (dir: string) => {
-      let names: string[] = [];
+      let names: string[];
       try { names = readdirSync(dir); } catch { return; }
       for (const n of names) {
         const p = join(dir, n);

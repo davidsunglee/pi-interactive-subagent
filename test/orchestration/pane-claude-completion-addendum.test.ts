@@ -114,7 +114,7 @@ async function captureClaudeLaunchScript(
     const scriptsRoot = join(sessionDir, "artifacts");
     const found: string[] = [];
     const walk = (d: string) => {
-      let names: string[] = [];
+      let names: string[];
       try { names = readdirSync(d); } catch { return; }
       for (const n of names) {
         const p = join(d, n);

@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
   const subagentName = process.env.PI_SUBAGENT_NAME ?? "";
   const subagentAgent = process.env.PI_SUBAGENT_AGENT ?? "";
 
-  function renderWidget(ctx: { ui: { setWidget: Function } }, _theme: any) {
+  function renderWidget(ctx: { ui: { setWidget: (...args: any[]) => void } }, _theme: any) {
     ctx.ui.setWidget(
       "subagent-tools",
       (_tui: any, theme: any) => {

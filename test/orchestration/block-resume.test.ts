@@ -32,9 +32,6 @@ describe("block-resume: serial continuation after resume", () => {
     // continuation runs step 2, aggregated completion fires.
     let callCount = 0;
     const sessionKeyForBlocker = "sess-step1-blocker";
-    let resolveResume: ((result: any) => void) | null = null;
-    const resumePromise = new Promise<any>((res) => { resolveResume = res; });
-
     const deps: LauncherDeps = {
       async launch(t) {
         return { id: t.task, name: t.name ?? "s", startTime: Date.now(), sessionKey: `sess-${t.task}` };
@@ -361,7 +358,7 @@ describe("block-resume: async runParallel blocked slot does not cascade-cancel s
 
     await new Promise((r) => setTimeout(r, 40));
 
-    const orchId = env.details.orchestrationId;
+    assert.ok(env.details.orchestrationId, "async dispatch returns an orchestration id");
     assert.ok(emitted.find((e) => e.kind === BLOCKED_KIND), "blocked event must fire");
     assert.equal(emitted.find((e) => e.kind === ORCHESTRATION_COMPLETE_KIND), undefined, "no completion yet");
 

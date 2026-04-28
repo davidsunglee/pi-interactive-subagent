@@ -1,4 +1,4 @@
-import type { Static, TObject } from "typebox";
+import type { Static } from "typebox";
 import { Type } from "typebox";
 import type {
   TranscriptMessage,

@@ -1,8 +1,8 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+  existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

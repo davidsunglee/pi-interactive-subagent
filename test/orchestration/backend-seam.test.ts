@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { registerOrchestrationTools } from "../../pi-extension/orchestration/tool-handlers.ts";
 import { createRegistry } from "../../pi-extension/orchestration/registry.ts";
 import { BLOCKED_KIND } from "../../pi-extension/orchestration/notification-kinds.ts";
-import type { LauncherDeps, WaitForCompletionHooks } from "../../pi-extension/orchestration/types.ts";
+import type { LauncherDeps } from "../../pi-extension/orchestration/types.ts";
 
 function makeHarness(deps: LauncherDeps) {
   const emitted: any[] = [];
@@ -127,7 +127,6 @@ describe("backend-seam: signal + onUpdate preserved across the post-9.5b waitFor
   });
 
   it("onUpdate (3rd positional) still receives partials from the underlying watch", async () => {
-    const partials: any[] = [];
     const deps: LauncherDeps = {
       async launch(t) { return { id: t.task, name: t.name ?? "s", startTime: Date.now() }; },
       async waitForCompletion(h, _signal, onUpdate, _hooks) {
