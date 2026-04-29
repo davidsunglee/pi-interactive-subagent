@@ -11,7 +11,7 @@
 // `pane-default-cwd.test.ts`.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchSubagent } from "../../pi-extension/subagents/index.ts";
@@ -86,5 +86,68 @@ describe("pane pi launch --tools reserves lifecycle tools", () => {
       false,
       `unrestricted launches must not emit --tools: lifecycle tools are already available under pi defaults\nscript:\n${script}`,
     );
+  });
+
+  it("pane Pi command includes orchestration token in --tools when the agent restricts its tool set with one", async () => {
+    const script = await captureLaunchScript({
+      name: "pane-coord", task: "hello", tools: "read, subagent_run_serial",
+    });
+    const m = script.match(/--tools '([^']+)'/);
+    assert.ok(m, `expected --tools in pane pi script; got:\n${script}`);
+    const tools = new Set(m![1].split(","));
+    assert.ok(tools.has("read"));
+    assert.ok(tools.has("subagent_run_serial"));
+    assert.ok(tools.has("caller_ping"));
+    assert.ok(tools.has("subagent_done"));
+  });
+
+  it("pane Pi launch rejects when spawning: false collides with an orchestration token in tools:", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pane-tools-conflict-root-"));
+    const sessionDir = mkdtempSync(join(tmpdir(), "pane-tools-conflict-sess-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "bad-coord.md"),
+        "---\nname: bad-coord\ntools: subagent_run_serial\nspawning: false\n---\nbad coord body\n",
+        "utf8",
+      );
+
+      const ctx = {
+        sessionManager: {
+          getSessionFile: () => join(sessionDir, "parent.jsonl"),
+          getSessionId: () => "parent",
+          getSessionDir: () => sessionDir,
+        },
+        cwd: sessionDir,
+      } as any;
+
+      await assert.rejects(
+        () => launchSubagent(
+          { cli: "pi", name: "pane-bad", task: "hi", agent: "bad-coord", cwd: root } as any,
+          ctx,
+          { surface: "pi-test-fake-surface" },
+        ),
+        /subagent_run_serial/,
+      );
+    } finally {
+      // The throw must fire before sendLongCommand — no .sh script should exist.
+      const scriptsRoot = join(sessionDir, "artifacts");
+      const found: string[] = [];
+      const walk = (dir: string) => {
+        let names: string[];
+        try { names = readdirSync(dir); } catch { return; }
+        for (const n of names) {
+          const p = join(dir, n);
+          try {
+            if (statSync(p).isDirectory()) walk(p);
+            else if (n.endsWith(".sh")) found.push(p);
+          } catch {}
+        }
+      };
+      walk(scriptsRoot);
+      assert.equal(found.length, 0, `conflict throw must fire before sendLongCommand; found scripts: ${found.join(", ")}`);
+      rmSync(root, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });

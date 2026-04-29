@@ -9,6 +9,9 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("runPiHeadless tools arg reserves lifecycle tools", () => {
   let backendModule: any;
@@ -89,5 +92,44 @@ describe("runPiHeadless tools arg reserves lifecycle tools", () => {
       false,
       "unrestricted launches must not emit --tools (lifecycle tools are already available under pi defaults)",
     );
+  });
+
+  it("argv includes orchestration token in the --tools allowlist when tools requests one", async () => {
+    lastSpawn = null;
+    const backend = backendModule.makeHeadlessBackend(ctx);
+    const handle = await backend.launch(
+      { name: "t", task: "hello", cli: "pi", tools: "read, subagent_run_serial" },
+      false,
+    );
+    await backend.watch(handle);
+    assert.ok(lastSpawn);
+    const idx = lastSpawn!.args.indexOf("--tools");
+    assert.notEqual(idx, -1);
+    const tools = new Set(lastSpawn!.args[idx + 1].split(","));
+    assert.ok(tools.has("read"));
+    assert.ok(tools.has("subagent_run_serial"));
+    assert.ok(tools.has("caller_ping"));
+    assert.ok(tools.has("subagent_done"));
+  });
+
+  it("headless launch rejects when spawning: false collides with an orchestration token in tools:", async () => {
+    const root = mkdtempSync(join(tmpdir(), "headless-tools-conflict-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "bad-coord.md"),
+        "---\nname: bad-coord\ntools: subagent_run_serial\nspawning: false\n---\nbad coord body\n",
+        "utf8",
+      );
+      lastSpawn = null;
+      const backend = backendModule.makeHeadlessBackend(ctx);
+      await assert.rejects(
+        () => backend.launch({ name: "t", task: "hi", cli: "pi", agent: "bad-coord", cwd: root }, false),
+        /subagent_run_serial/,
+      );
+      assert.equal(lastSpawn, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

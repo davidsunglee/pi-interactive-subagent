@@ -97,6 +97,25 @@ The `usage` / `transcript` fields are `undefined` on pane-backend results in v1;
 
 Agents declaring `tools:` frontmatter have that restriction enforced in **both** backends for both CLIs (`pi` and `claude`). On the Claude path, the pi tool names are mapped to the equivalent Claude tools (`read → Read`, `bash → Bash`, `find`/`ls → Glob`, etc.) and emitted as `--tools` (the Claude CLI built-in tool availability flag — not `--allowedTools`, which is a permission rule that `bypassPermissions` / `--dangerously-skip-permissions` mode ignores). Agents without `tools:` frontmatter still run with full tool access on both CLIs.
 
+### Coordinator agents
+
+An agent that dispatches children must:
+
+1. Run on `cli: pi` (the default). The Claude CLI does not expose pi's orchestration tools (`subagent`, `subagents_list`, `subagent_resume`, `subagent_run_serial`, `subagent_run_parallel`, `subagent_run_cancel`); a Claude-CLI coordinator cannot dispatch children via these tools.
+2. Explicitly list the orchestration tools it needs in its `tools:` frontmatter when using a restrictive allowlist. Tokens not listed are dropped at launch — even though `spawning: true` (the default) leaves them ungated, the `--tools` filter only emits names the agent named.
+
+Example minimal coordinator frontmatter:
+
+```yaml
+---
+name: plan-refiner
+cli: pi
+tools: read, bash, subagent_run_serial
+---
+```
+
+An agent declaring **both** `spawning: false` **and** any orchestration tool in `tools:` is rejected at launch with an error naming the conflicting token. Pick one: either omit `spawning: false` so the coordinator can dispatch children, or remove the orchestration token(s) from `tools:` and keep the worker-style restriction.
+
 ## Skills
 
 Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task) work as follows:
