@@ -46,4 +46,39 @@ describe("resolvePiToolsArg", () => {
     assert.equal(parts.filter((t) => t === "subagent_done").length, 1);
     assert.ok(parts.includes("read"));
   });
+
+  it("keeps orchestration tokens listed in tools alongside builtins", () => {
+    const arg = resolvePiToolsArg("read, subagent_run_serial");
+    assert.ok(arg, "must emit a tools arg when builtins and orchestration tokens are present");
+    const set = new Set(arg!.split(",").map((t) => t.trim()));
+    assert.ok(set.has("read"), "read must be present");
+    assert.ok(set.has("subagent_run_serial"), "subagent_run_serial must be present");
+    assert.ok(set.has("caller_ping"), "caller_ping must be reserved");
+    assert.ok(set.has("subagent_done"), "subagent_done must be reserved");
+  });
+
+  it("emits a tools list when only an orchestration token is requested", () => {
+    const arg = resolvePiToolsArg("subagent_run_serial");
+    assert.ok(arg !== undefined, "must emit a tools arg when an orchestration token is present");
+    const set = new Set(arg!.split(",").map((t) => t.trim()));
+    assert.ok(set.has("subagent_run_serial"), "subagent_run_serial must be present");
+    assert.ok(set.has("caller_ping"), "caller_ping must be reserved");
+    assert.ok(set.has("subagent_done"), "subagent_done must be reserved");
+  });
+
+  it("keeps every SPAWNING_TOOLS member when listed individually", () => {
+    const arg = resolvePiToolsArg(
+      "subagent, subagents_list, subagent_resume, subagent_run_serial, subagent_run_parallel, subagent_run_cancel",
+    );
+    assert.ok(arg !== undefined, "must emit a tools arg when orchestration tokens are present");
+    const set = new Set(arg!.split(",").map((t) => t.trim()));
+    assert.ok(set.has("subagent"), "subagent must be present");
+    assert.ok(set.has("subagents_list"), "subagents_list must be present");
+    assert.ok(set.has("subagent_resume"), "subagent_resume must be present");
+    assert.ok(set.has("subagent_run_serial"), "subagent_run_serial must be present");
+    assert.ok(set.has("subagent_run_parallel"), "subagent_run_parallel must be present");
+    assert.ok(set.has("subagent_run_cancel"), "subagent_run_cancel must be present");
+    assert.ok(set.has("caller_ping"), "caller_ping must be reserved");
+    assert.ok(set.has("subagent_done"), "subagent_done must be reserved");
+  });
 });
