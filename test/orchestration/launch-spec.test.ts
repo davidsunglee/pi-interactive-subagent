@@ -209,6 +209,63 @@ describe("resolveLaunchSpec", () => {
     }
   });
 
+  it("throws when spawning: false collides with an orchestration token in tools:", () => {
+    const root = mkdtempSync(join(tmpdir(), "ls-bad-coord-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "bad-coord.md"),
+        "---\nname: bad-coord\ntools: read, subagent_run_serial\nspawning: false\n---\nbody\n",
+        "utf8",
+      );
+      assert.throws(
+        () =>
+          resolveLaunchSpec(
+            { name: "X", task: "t", agent: "bad-coord", cwd: root },
+            baseCtx,
+          ),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.ok(
+            err.message.includes("spawning: false"),
+            `expected "spawning: false" in message, got: ${err.message}`,
+          );
+          assert.ok(
+            err.message.includes("subagent_run_serial"),
+            `expected "subagent_run_serial" in message, got: ${err.message}`,
+          );
+          return true;
+        },
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps spawning: false → SPAWNING_TOOLS deny-set when no orchestration token is listed", () => {
+    const root = mkdtempSync(join(tmpdir(), "ls-strict-worker-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "strict-worker.md"),
+        "---\ntools: read, bash\nspawning: false\n---\nbody\n",
+        "utf8",
+      );
+      const spec = resolveLaunchSpec(
+        { name: "X", task: "t", agent: "strict-worker", cwd: root },
+        baseCtx,
+      );
+      assert.ok(spec.denySet.has("subagent"), "denySet must contain subagent");
+      assert.ok(spec.denySet.has("subagents_list"), "denySet must contain subagents_list");
+      assert.ok(spec.denySet.has("subagent_resume"), "denySet must contain subagent_resume");
+      assert.ok(spec.denySet.has("subagent_run_serial"), "denySet must contain subagent_run_serial");
+      assert.ok(spec.denySet.has("subagent_run_parallel"), "denySet must contain subagent_run_parallel");
+      assert.ok(spec.denySet.has("subagent_run_cancel"), "denySet must contain subagent_run_cancel");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("loadAgentDefaults({ projectRoot }) searches the specified root before global/bundled", () => {
     const root = mkdtempSync(join(tmpdir(), "ls-agent-root-"));
     try {

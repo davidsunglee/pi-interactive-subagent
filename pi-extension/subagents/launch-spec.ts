@@ -506,6 +506,23 @@ export interface LaunchSpecContext {
   cwd: string;
 }
 
+function validateSpawningToolsConflict(
+  agentDefs: AgentDefaults | null,
+  effectiveTools: string | undefined,
+): void {
+  if (agentDefs?.spawning !== false) return;
+  if (!effectiveTools) return;
+  const conflicting = effectiveTools
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => SPAWNING_TOOLS.has(t));
+  if (conflicting.length === 0) return;
+  throw new Error(
+    `Agent declares \`spawning: false\` but \`tools:\` includes orchestration tool(s): ${conflicting.join(", ")}. ` +
+      `Remove the conflicting token(s) from \`tools:\` or remove \`spawning: false\` so the coordinator can dispatch children.`,
+  );
+}
+
 export function resolveLaunchSpec(
   params: SubagentParamsType,
   ctx: LaunchSpecContext,
@@ -531,6 +548,7 @@ export function resolveLaunchSpec(
 
   const effectiveModel = params.model ?? agentDefs?.model;
   const effectiveTools = params.tools ?? agentDefs?.tools;
+  validateSpawningToolsConflict(agentDefs, effectiveTools);
   const effectiveSkills = params.skills ?? agentDefs?.skills;
   const effectiveThinking = params.thinking ?? agentDefs?.thinking;
   const effectiveCli = params.cli ?? agentDefs?.cli ?? "pi";
