@@ -109,6 +109,7 @@ Example minimal coordinator frontmatter:
 ```yaml
 ---
 name: plan-refiner
+description: Refines a plan by dispatching focused worker subagents
 cli: pi
 tools: read, bash, subagent_run_serial
 ---

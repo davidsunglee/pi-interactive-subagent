@@ -519,7 +519,8 @@ function validateSpawningToolsConflict(
   if (conflicting.length === 0) return;
   throw new Error(
     `Agent declares \`spawning: false\` but \`tools:\` includes orchestration tool(s): ${conflicting.join(", ")}. ` +
-      `Remove the conflicting token(s) from \`tools:\` or remove \`spawning: false\` so the coordinator can dispatch children.`,
+      `Remove the conflicting token(s) from \`tools:\` or remove \`spawning: false\` so the coordinator can dispatch children. ` +
+      `Note: pi orchestration tools are only available to pi-backed coordinator agents (\`cli: pi\`); the Claude CLI does not expose them.`,
   );
 }
 

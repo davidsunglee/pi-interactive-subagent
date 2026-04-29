@@ -234,6 +234,14 @@ describe("resolveLaunchSpec", () => {
             err.message.includes("subagent_run_serial"),
             `expected "subagent_run_serial" in message, got: ${err.message}`,
           );
+          assert.ok(
+            /cli:\s*pi/i.test(err.message),
+            `expected hint about pi-backed coordinator (cli: pi), got: ${err.message}`,
+          );
+          assert.ok(
+            /Claude CLI/i.test(err.message),
+            `expected hint that Claude CLI does not expose pi orchestration tools, got: ${err.message}`,
+          );
           return true;
         },
       );

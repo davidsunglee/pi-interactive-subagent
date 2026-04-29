@@ -16,24 +16,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchSubagent } from "../../pi-extension/subagents/index.ts";
 
+type LaunchParams = Parameters<typeof launchSubagent>[0];
+type LaunchCtx = Parameters<typeof launchSubagent>[1];
+
 async function captureLaunchScript(
-  subagentParams: Record<string, unknown>,
+  subagentParams: Partial<LaunchParams> & { name: string; task: string },
 ): Promise<string> {
   const sessionDir = mkdtempSync(join(tmpdir(), "pane-tools-"));
   const ctxCwd = mkdtempSync(join(tmpdir(), "pane-tools-ctx-"));
   try {
-    await launchSubagent(
-      { cli: "pi", ...subagentParams } as any,
-      {
-        sessionManager: {
-          getSessionFile: () => join(sessionDir, "parent.jsonl"),
-          getSessionId: () => "parent",
-          getSessionDir: () => sessionDir,
-        },
-        cwd: ctxCwd,
-      } as any,
-      { surface: "pi-test-fake-surface" },
-    ).catch(() => { /* mux-less sendCommand throws; we only need the script */ });
+    const params: LaunchParams = { cli: "pi", ...subagentParams };
+    const ctx: LaunchCtx = {
+      sessionManager: {
+        getSessionFile: () => join(sessionDir, "parent.jsonl"),
+        getSessionId: () => "parent",
+        getSessionDir: () => sessionDir,
+      },
+      cwd: ctxCwd,
+    };
+    await launchSubagent(params, ctx, { surface: "pi-test-fake-surface" }).catch(() => {
+      /* mux-less sendCommand throws; we only need the script */
+    });
 
     const scriptsRoot = join(sessionDir, "artifacts");
     const found: string[] = [];
@@ -112,21 +115,24 @@ describe("pane pi launch --tools reserves lifecycle tools", () => {
         "utf8",
       );
 
-      const ctx = {
+      const ctx: LaunchCtx = {
         sessionManager: {
           getSessionFile: () => join(sessionDir, "parent.jsonl"),
           getSessionId: () => "parent",
           getSessionDir: () => sessionDir,
         },
         cwd: sessionDir,
-      } as any;
+      };
+      const params: LaunchParams = {
+        cli: "pi",
+        name: "pane-bad",
+        task: "hi",
+        agent: "bad-coord",
+        cwd: root,
+      };
 
       await assert.rejects(
-        () => launchSubagent(
-          { cli: "pi", name: "pane-bad", task: "hi", agent: "bad-coord", cwd: root } as any,
-          ctx,
-          { surface: "pi-test-fake-surface" },
-        ),
+        () => launchSubagent(params, ctx, { surface: "pi-test-fake-surface" }),
         /subagent_run_serial/,
       );
     } finally {
