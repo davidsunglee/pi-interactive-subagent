@@ -1,9 +1,38 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { randomBytes } from "node:crypto";
 import { runSerial } from "./run-serial.ts";
 import { runParallel } from "./run-parallel.ts";
 import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult, type OrchestrationTask } from "./types.ts";
 import type { Registry } from "./registry.ts";
+import { writeOrchestrationTaskArtifact } from "./task-artifact.ts";
+import { getArtifactDir } from "../subagents/launch-spec.ts";
+
+function newSyncOrchestrationId(): string {
+  return randomBytes(4).toString("hex");
+}
+
+function buildArtifactWriter(
+  ctx: { sessionManager: { getSessionDir(): string; getSessionId(): string } },
+  orchestrationId: string,
+): ((taskIndex: number, finalMessage: string) => string | null) | undefined {
+  let artifactDir: string;
+  try {
+    artifactDir = getArtifactDir(
+      ctx.sessionManager.getSessionDir(),
+      ctx.sessionManager.getSessionId(),
+    );
+  } catch {
+    return undefined;
+  }
+  return (taskIndex, finalMessage) =>
+    writeOrchestrationTaskArtifact({
+      artifactDir,
+      orchestrationId,
+      taskIndex,
+      finalMessage,
+    });
+}
 
 function continueSerialFromIndex(opts: {
   orchestrationId: string;
@@ -12,9 +41,13 @@ function continueSerialFromIndex(opts: {
   tasks: OrchestrationTask[];
   deps: LauncherDeps;
   registry: Registry;
+  writeArtifact?: (taskIndex: number, finalMessage: string) => string | null;
 }): void {
   const { orchestrationId, startIndex, previous, tasks, deps, registry } = opts;
   const signal = registry.getAbortSignal(orchestrationId)!;
+  const offsetWriteArtifact = opts.writeArtifact
+    ? (j: number, body: string) => opts.writeArtifact!(startIndex + j, body)
+    : undefined;
   (async () => {
     try {
       const remaining = tasks.slice(startIndex).map((t, j) => ({
@@ -23,6 +56,7 @@ function continueSerialFromIndex(opts: {
       }));
       const out = await runSerial(remaining, {
         signal,
+        writeArtifact: offsetWriteArtifact,
         onLaunched: (j, info) => registry.onTaskLaunched(orchestrationId, startIndex + j, info),
         onTerminal: (j, r) => registry.onTaskTerminal(orchestrationId, startIndex + j, { ...r, index: startIndex + j }),
         onSessionKey: (j, key) => registry.updateSessionKey(orchestrationId, startIndex + j, key),
@@ -153,15 +187,18 @@ export function registerOrchestrationTools(
                 tasks: params.tasks,
                 deps,
                 registry,
+                writeArtifact,
               });
             },
           });
+          const writeArtifact = buildArtifactWriter(ctx, orchestrationId);
           const signal = registry.getAbortSignal(orchestrationId)!;
           // Fire-and-forget: background execution with registry bookkeeping.
           (async () => {
             try {
               const out = await runSerial(params.tasks, {
                 signal,
+                writeArtifact,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
                 onSessionKey: (taskIndex, sessionKey) => registry.updateSessionKey(orchestrationId, taskIndex, sessionKey),
@@ -225,11 +262,13 @@ export function registerOrchestrationTools(
           };
         }
 
+        const orchestrationId = newSyncOrchestrationId();
+        const writeArtifact = buildArtifactWriter(ctx, orchestrationId);
         const deps = depsFactory(ctx);
         try {
           const out = await runSerial(
             params.tasks,
-            { signal, onUpdate: _onUpdate as any },
+            { signal, onUpdate: _onUpdate as any, writeArtifact },
             deps,
           );
           return {
@@ -290,6 +329,7 @@ export function registerOrchestrationTools(
           const orchestrationId = registry.dispatchAsync({
             config: { mode: "parallel", tasks: params.tasks, maxConcurrency: params.maxConcurrency },
           });
+          const writeArtifact = buildArtifactWriter(ctx, orchestrationId);
           const deps = depsFactory(ctx);
           const signal = registry.getAbortSignal(orchestrationId)!;
           // Fire-and-forget: background execution with registry bookkeeping.
@@ -297,6 +337,7 @@ export function registerOrchestrationTools(
             try {
               await runParallel(params.tasks, {
                 signal,
+                writeArtifact,
                 onLaunched: (taskIndex, info) => registry.onTaskLaunched(orchestrationId, taskIndex, info),
                 onTerminal: (taskIndex, result) => registry.onTaskTerminal(orchestrationId, taskIndex, result),
                 onSessionKey: (taskIndex, sessionKey) => registry.updateSessionKey(orchestrationId, taskIndex, sessionKey),
@@ -352,6 +393,8 @@ export function registerOrchestrationTools(
           };
         }
 
+        const orchestrationId = newSyncOrchestrationId();
+        const writeArtifact = buildArtifactWriter(ctx, orchestrationId);
         const deps = depsFactory(ctx);
         try {
           const out = await runParallel(
@@ -360,6 +403,7 @@ export function registerOrchestrationTools(
               maxConcurrency: params.maxConcurrency,
               signal,
               onUpdate: _onUpdate as any,
+              writeArtifact,
             },
             deps,
           );
@@ -425,6 +469,7 @@ export function toPublicResults(results: OrchestrationResult[]): OrchestratedTas
     state: r.state ?? (r.exitCode === 0 && !r.error ? "completed" : "failed"),
     finalMessage: r.finalMessage,
     transcriptPath: r.transcriptPath ?? null,
+    artifactPath: r.artifactPath ?? null,
     elapsedMs: r.elapsedMs,
     exitCode: r.exitCode,
     sessionKey: r.sessionKey,
@@ -434,15 +479,15 @@ export function toPublicResults(results: OrchestrationResult[]): OrchestratedTas
   }));
 }
 
-function summarize(mode: "serial" | "parallel", results: any[], isError: boolean): string {
-  const lines = [`${mode} orchestration: ${results.length} task(s), isError=${isError}`];
+function summarize(mode: "serial" | "parallel", results: OrchestrationResult[], isError: boolean): string {
+  const lines = [
+    `${mode} orchestration: ${results.length} task(s), isError=${isError}`,
+    `Each task's full final message is at the artifact path. Read it before acting on the result.`,
+  ];
   for (const r of results) {
-    lines.push(`- ${r.name}: exit=${r.exitCode} (${r.elapsedMs}ms) — ${firstLine(r.finalMessage)}`);
+    const path = r.artifactPath ?? null;
+    const tail = path ? `artifact: ${path}` : `artifact: (none)`;
+    lines.push(`- ${r.name}: exit=${r.exitCode} (${r.elapsedMs}ms) — ${tail}`);
   }
   return lines.join("\n");
-}
-
-function firstLine(s: string): string {
-  const line = (s ?? "").split("\n").find((l) => l.trim()) ?? "";
-  return line.length > 200 ? line.slice(0, 200) + "…" : line;
 }

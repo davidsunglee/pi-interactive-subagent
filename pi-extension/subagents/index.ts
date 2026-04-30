@@ -32,6 +32,7 @@ import {
 } from "./session.ts";
 import { registerOrchestrationTools } from "../orchestration/tool-handlers.ts";
 import { makeDefaultDeps } from "../orchestration/default-deps.ts";
+import { writeOrchestrationTaskArtifact } from "../orchestration/task-artifact.ts";
 import { preflightOrchestration } from "./preflight-orchestration.ts";
 import { createRegistry, type Registry } from "../orchestration/registry.ts";
 import { type LauncherDeps } from "../orchestration/types.ts";
@@ -1950,12 +1951,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
               const transcriptPath =
                 result.transcriptPath
                 ?? (isPiResume ? params.sessionPath ?? null : null);
+              let artifactPath: string | null = null;
+              if (summary && summary.length > 0) {
+                artifactPath = writeOrchestrationTaskArtifact({
+                  artifactDir,
+                  orchestrationId: owner.orchestrationId,
+                  taskIndex: owner.taskIndex,
+                  finalMessage: summary,
+                });
+              }
               registry.onResumeTerminal(sessionKey, {
                 name: taskName,
                 index: owner.taskIndex,
                 state: result.exitCode === 0 && !result.error ? "completed" : "failed",
                 finalMessage: summary,
                 transcriptPath,
+                artifactPath,
                 elapsedMs: result.elapsed * 1000,
                 exitCode: result.exitCode,
                 sessionKey,

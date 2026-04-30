@@ -80,4 +80,55 @@ describe("registry sheds heavy per-task payloads after completion (review-v1 #4)
     assert.deepEqual(res, { ok: true, alreadyTerminal: true });
     assert.equal(emitted.length, 1, "no duplicate completion event");
   });
+
+  it("drops finalMessage from the tombstone once artifactPath is set", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskTerminal(id, 0, {
+      name: "a",
+      index: 0,
+      state: "completed",
+      finalMessage: "long markdown body",
+      artifactPath: "/tmp/orchestrations/abcd/task-0.md",
+      exitCode: 0,
+      elapsedMs: 1,
+    });
+
+    // Emitted aggregated completion still carries finalMessage AND artifactPath.
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].results[0].finalMessage, "long markdown body");
+    assert.equal(emitted[0].results[0].artifactPath, "/tmp/orchestrations/abcd/task-0.md");
+
+    // Tombstone drops finalMessage; artifactPath is preserved as the pointer.
+    const snap = reg.getSnapshot(id);
+    assert.ok(snap);
+    assert.equal(snap!.tasks[0].finalMessage, undefined,
+      "tombstone must drop finalMessage once artifactPath is set");
+    assert.equal(snap!.tasks[0].artifactPath, "/tmp/orchestrations/abcd/task-0.md",
+      "tombstone must retain artifactPath as the body pointer");
+  });
+
+  it("retains finalMessage on the tombstone when artifactPath is null", () => {
+    const { emitter } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: { mode: "serial", tasks: [{ name: "a", agent: "x", task: "t" }] },
+    });
+    reg.onTaskTerminal(id, 0, {
+      name: "a",
+      index: 0,
+      state: "failed",
+      finalMessage: "early failure body",
+      artifactPath: null,
+      exitCode: 1,
+      elapsedMs: 1,
+      error: "boom",
+    });
+    const snap = reg.getSnapshot(id);
+    assert.equal(snap!.tasks[0].finalMessage, "early failure body",
+      "no artifact ⇒ finalMessage must be retained for post-mortem");
+  });
 });

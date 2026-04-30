@@ -11,7 +11,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentsExtension, { __test__ } from "../../pi-extension/subagents/index.ts";
@@ -221,8 +221,15 @@ describe("subagent_resume tool boundary", () => {
     assert.ok(snap);
     assert.equal(snap!.tasks[0].state, "completed",
       `Claude task should be completed after re-ingestion; got ${snap!.tasks[0].state}`);
-    assert.equal(snap!.tasks[0].finalMessage, "Resumed Claude session exited",
-      "finalMessage should reflect Claude terminal default when watcher provides no summary");
+    // Task 7+8: tombstone strips finalMessage once artifactPath is set; verify
+    // the artifact file carries the Claude terminal fallback message instead.
+    const artifactPath = snap!.tasks[0].artifactPath;
+    assert.ok(typeof artifactPath === "string" && artifactPath.length > 0,
+      "artifactPath must be set after Task 8 artifact write on resume");
+    assert.equal(snap!.tasks[0].finalMessage, undefined,
+      "tombstone must drop finalMessage once artifactPath is set (Task 7 strip)");
+    assert.equal(readFileSync(artifactPath!, "utf8"), "Resumed Claude session exited",
+      "artifact file must contain the Claude terminal fallback message");
   });
 
   it("sessionId + ping result → routes to onTaskBlocked (ping re-block)", async () => {

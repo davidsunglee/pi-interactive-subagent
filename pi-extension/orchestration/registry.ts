@@ -182,8 +182,14 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
     // cancel-on-terminal semantics and post-mortem inspection.
     for (let i = 0; i < entry.tasks.length; i++) {
       const t = entry.tasks[i];
-      if (t.transcript || t.usage) {
-        entry.tasks[i] = { ...t, transcript: undefined, usage: undefined };
+      const stripFinalMessage = t.artifactPath != null && t.finalMessage != null;
+      if (t.transcript || t.usage || stripFinalMessage) {
+        entry.tasks[i] = {
+          ...t,
+          transcript: undefined,
+          usage: undefined,
+          finalMessage: stripFinalMessage ? undefined : t.finalMessage,
+        };
       }
     }
   }

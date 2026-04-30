@@ -1,5 +1,8 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { registerOrchestrationTools, toPublicResults } from "../../pi-extension/orchestration/tool-handlers.ts";
 import type { LauncherDeps, OrchestrationResult } from "../../pi-extension/orchestration/types.ts";
 
@@ -443,5 +446,160 @@ describe("toPublicResults", () => {
     const out = toPublicResults(input);
     assert.equal(out[0].sessionKey, "/tmp/sess.jsonl");
     assert.equal((out[0] as any).sessionId, undefined);
+  });
+});
+
+describe("writeArtifact wiring (sync)", () => {
+  let tmpDir: string;
+
+  after(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeApi() {
+    const tools: any[] = [];
+    return {
+      tools,
+      api: {
+        registerTool(tool: any) { tools.push(tool); },
+        on() {}, registerCommand() {}, registerMessageRenderer() {},
+        sendMessage() {}, sendUserMessage() {},
+      } as any,
+    };
+  }
+
+  it("subagent_run_serial sync writes one artifact per task and renders the new content shape", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "th-serial-art-"));
+    const sessionManager = { getSessionDir: () => tmpDir, getSessionId: () => "sess1" };
+
+    let call = 0;
+    const deps: LauncherDeps = {
+      async launch(t) { return { id: t.task, name: t.name ?? "s", startTime: Date.now() }; },
+      async waitForCompletion(h) {
+        const i = call++;
+        const msg = i === 0 ? "first task\nline two\nline three" : "second task\nmulti line";
+        return { name: h.name, finalMessage: msg, transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+
+    const { api, tools } = makeApi();
+    registerOrchestrationTools(api, () => deps, () => true);
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
+
+    const out = await serial.execute(
+      "call-art-serial",
+      { tasks: [{ name: "step-1", agent: "x", task: "t1" }, { name: "step-2", agent: "x", task: "t2" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager, cwd: tmpDir },
+    );
+
+    const text: string = out.content[0].text;
+    assert.match(text, /^serial orchestration: 2 task\(s\), isError=false\n/);
+    assert.match(text, /Each task's full final message is at the artifact path\. Read it before acting on the result\./);
+    assert.match(text, /- step-1: exit=0 \(\d+ms\) — artifact: .+\/orchestrations\/[0-9a-f]{8}\/task-0\.md/);
+    assert.match(text, /- step-2: exit=0 \(\d+ms\) — artifact: .+\/task-1\.md/);
+
+    const r0 = out.details.results[0];
+    const r1 = out.details.results[1];
+    assert.ok(r0.artifactPath, "artifactPath must be set on result 0");
+    assert.ok(r1.artifactPath, "artifactPath must be set on result 1");
+    assert.equal(readFileSync(r0.artifactPath, "utf8"), "first task\nline two\nline three");
+    assert.equal(readFileSync(r1.artifactPath, "utf8"), "second task\nmulti line");
+  });
+
+  it("subagent_run_parallel sync writes per-task artifacts and renders the new content shape", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "th-parallel-art-"));
+    const sessionManager = { getSessionDir: () => tmpDir, getSessionId: () => "sess1" };
+
+    const deps: LauncherDeps = {
+      async launch(t) { return { id: t.task, name: t.name ?? "s", startTime: Date.now() }; },
+      async waitForCompletion(h) {
+        const msg = `body for ${h.name}`;
+        return { name: h.name, finalMessage: msg, transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+
+    const { api, tools } = makeApi();
+    registerOrchestrationTools(api, () => deps, () => true);
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
+
+    const out = await parallel.execute(
+      "call-art-parallel",
+      { tasks: [{ name: "p-1", agent: "x", task: "t1" }, { name: "p-2", agent: "x", task: "t2" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager, cwd: tmpDir },
+    );
+
+    const text: string = out.content[0].text;
+    assert.match(text, /^parallel orchestration: 2 task\(s\), isError=false\n/);
+    assert.match(text, /Each task's full final message is at the artifact path\./);
+    assert.match(text, /artifact: .+\/orchestrations\/[0-9a-f]{8}\/task-0\.md/);
+    assert.match(text, /artifact: .+\/task-1\.md/);
+
+    const r0 = out.details.results[0];
+    const r1 = out.details.results[1];
+    assert.ok(r0.artifactPath, "artifactPath must be set on result 0");
+    assert.ok(r1.artifactPath, "artifactPath must be set on result 1");
+    assert.equal(readFileSync(r0.artifactPath, "utf8"), "body for p-1");
+    assert.equal(readFileSync(r1.artifactPath, "utf8"), "body for p-2");
+  });
+
+  it("renders 'artifact: (none)' for tasks with empty finalMessage", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "th-none-art-"));
+    const sessionManager = { getSessionDir: () => tmpDir, getSessionId: () => "sess1" };
+
+    const deps: LauncherDeps = {
+      async launch(t) { return { id: t.task, name: t.name ?? "s", startTime: Date.now() }; },
+      async waitForCompletion(h) {
+        return { name: h.name, finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+
+    const { api, tools } = makeApi();
+    registerOrchestrationTools(api, () => deps, () => true);
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
+
+    const out = await serial.execute(
+      "call-art-none",
+      { tasks: [{ name: "empty-task", agent: "x", task: "t1" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager, cwd: tmpDir },
+    );
+
+    const text: string = out.content[0].text;
+    assert.match(text, /artifact: \(none\)/);
+    assert.equal(out.details.results[0].artifactPath, null);
+  });
+
+  it("round-trips a >= 50KB markdown body through the artifact path", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "th-large-art-"));
+    const sessionManager = { getSessionDir: () => tmpDir, getSessionId: () => "sess1" };
+    const largeBody = ("# heading\n" + "x".repeat(60_000)).slice(0, 60_000);
+
+    const deps: LauncherDeps = {
+      async launch(t) { return { id: t.task, name: t.name ?? "s", startTime: Date.now() }; },
+      async waitForCompletion(h) {
+        return { name: h.name, finalMessage: largeBody, transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+
+    const { api, tools } = makeApi();
+    registerOrchestrationTools(api, () => deps, () => true);
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
+
+    const out = await serial.execute(
+      "call-art-large",
+      { tasks: [{ name: "large-task", agent: "x", task: "t1" }] },
+      new AbortController().signal,
+      () => {},
+      { sessionManager, cwd: tmpDir },
+    );
+
+    const artifactPath = out.details.results[0].artifactPath;
+    assert.ok(artifactPath, "artifactPath must be set for large body");
+    assert.equal(readFileSync(artifactPath, "utf8"), largeBody);
   });
 });
