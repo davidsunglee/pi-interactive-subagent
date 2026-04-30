@@ -596,14 +596,20 @@ export function resolveLaunchSpec(
   const systemPromptMode = agentDefs?.systemPromptMode;
   const identityInSystemPrompt = !!(systemPromptMode && identity);
   const roleBlock = identity && !identityInSystemPrompt ? `\n\n${identity}` : "";
+  const disableModelInvocation = agentDefs?.disableModelInvocation === true;
+  const noModelTask = roleBlock ? `${roleBlock}\n\n${params.task}` : params.task;
   const fullTask = inheritsConversationContext
     ? params.task
-    : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
+    : disableModelInvocation
+      ? noModelTask
+      : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
   // Claude-only task body: identity reaches Claude via --system-prompt /
   // --append-system-prompt, never via the task body. So omit `roleBlock`.
   const claudeTaskBody = inheritsConversationContext
     ? params.task
-    : `${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
+    : disableModelInvocation
+      ? params.task
+      : `${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
 
   const skillPrompts = (effectiveSkills ?? "")
     .split(",")
