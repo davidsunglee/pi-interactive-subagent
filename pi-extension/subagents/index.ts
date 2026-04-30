@@ -89,6 +89,21 @@ export type {
   SubagentSessionMode,
 };
 
+export function buildOrchestrationCompleteContent(payload: {
+  orchestrationId: string;
+  results: Array<{ name: string; exitCode?: number; elapsedMs?: number; artifactPath?: string | null }>;
+  isError: boolean;
+}): string {
+  const headerLine = `Orchestration "${payload.orchestrationId}" completed (${payload.results.length} task(s), isError=${payload.isError}).`;
+  const hintLine = `Each task's full final message is at the artifact path. Read it before acting on the result.`;
+  const rowLines = payload.results.map((r) => {
+    const path = r.artifactPath ?? null;
+    const tail = path ? `artifact: ${path}` : `artifact: (none)`;
+    return `- ${r.name}: exit=${r.exitCode ?? "?"} (${r.elapsedMs ?? 0}ms) — ${tail}`;
+  });
+  return [headerLine, hintLine, ...rowLines].join("\n");
+}
+
 type ResumeToolParams = {
   sessionPath?: string;
   sessionId?: string;
@@ -1225,9 +1240,7 @@ const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
     updateWidget();
     piForRegistry.sendMessage({
       customType: "orchestration_complete",
-      content:
-        `Orchestration "${payload.orchestrationId}" completed ` +
-        `(${payload.results.length} task(s), isError=${payload.isError}).`,
+      content: buildOrchestrationCompleteContent(payload as any),
       display: true,
       details: payload,
     }, { triggerTurn: true, deliverAs: "steer" });
