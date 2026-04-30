@@ -49,6 +49,7 @@ export interface OrchestrationResult {
   name: string;
   finalMessage: string;
   transcriptPath: string | null;
+  artifactPath?: string | null;
   exitCode: number;
   elapsedMs: number;
   sessionId?: string;
@@ -73,6 +74,8 @@ export interface OrchestratedTaskResult {
   state: OrchestrationState;
   finalMessage?: string;
   transcriptPath?: string | null;
+  /** Filesystem path to the per-task final-message artifact. Null when no artifact was written (empty finalMessage, capture failure, or cancelled-before-completion). */
+  artifactPath?: string | null;
   elapsedMs?: number;
   exitCode?: number;
   sessionKey?: string;
