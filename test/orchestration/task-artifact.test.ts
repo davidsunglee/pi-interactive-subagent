@@ -1,6 +1,6 @@
-import { describe, it, after } from "node:test";
+import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOrchestrationTaskArtifact } from "../../pi-extension/orchestration/task-artifact.ts";
