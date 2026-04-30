@@ -290,6 +290,98 @@ describe("runSerial", () => {
   });
 });
 
+describe("runSerial writeArtifact hook", () => {
+  it("calls writeArtifact once per terminal step with (taskIndex, finalMessage)", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "A body" }, { finalMessage: "B body" }]);
+    const calls: { i: number; body: string }[] = [];
+    await runSerial(
+      [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }],
+      { writeArtifact: (i, body) => { calls.push({ i, body }); return `/tmp/task-${i}.md`; } },
+      deps,
+    );
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], { i: 0, body: "A body" });
+    assert.deepEqual(calls[1], { i: 1, body: "B body" });
+  });
+
+  it("merges the returned path into results[i].artifactPath", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "A body" }, { finalMessage: "B body" }]);
+    const out = await runSerial(
+      [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }],
+      { writeArtifact: (i, _body) => `/tmp/task-${i}.md` },
+      deps,
+    );
+    assert.equal(out.results[0].artifactPath, "/tmp/task-0.md");
+    assert.equal(out.results[1].artifactPath, "/tmp/task-1.md");
+  });
+
+  it("forwards artifactPath into the onTerminal payload", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "A body" }, { finalMessage: "B body" }]);
+    const terminalCalls: Array<{ idx: number; artifactPath: string | null | undefined }> = [];
+    await runSerial(
+      [{ agent: "x", task: "t1" }, { agent: "x", task: "t2" }],
+      {
+        writeArtifact: (i, _body) => `/tmp/task-${i}.md`,
+        onTerminal: (idx, result) => { terminalCalls.push({ idx, artifactPath: result.artifactPath }); },
+      },
+      deps,
+    );
+    assert.equal(terminalCalls[0].artifactPath, "/tmp/task-0.md");
+    assert.equal(terminalCalls[1].artifactPath, "/tmp/task-1.md");
+  });
+
+  it("skips writeArtifact when finalMessage is empty", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "" }]);
+    const calls: unknown[] = [];
+    const out = await runSerial(
+      [{ agent: "x", task: "t1" }],
+      { writeArtifact: (i, body) => { calls.push({ i, body }); return `/tmp/task-${i}.md`; } },
+      deps,
+    );
+    assert.equal(calls.length, 0);
+    assert.equal(out.results[0].artifactPath ?? null, null);
+  });
+
+  it("treats writeArtifact returning null as artifactPath: null", async () => {
+    const { deps } = fakeDeps([{ finalMessage: "body" }]);
+    const out = await runSerial(
+      [{ agent: "x", task: "t1" }],
+      { writeArtifact: () => null },
+      deps,
+    );
+    assert.equal(out.results[0].artifactPath, null);
+  });
+
+  it("does NOT call writeArtifact for a blocked step (early return path)", async () => {
+    const calls: unknown[] = [];
+    const deps: import("../../pi-extension/orchestration/types.ts").LauncherDeps = {
+      async launch(task) {
+        return { id: "id-0", name: task.name ?? "step-1", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return {
+          name: handle.name,
+          finalMessage: "",
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: 1,
+          ping: { name: "x", message: "?" },
+          sessionKey: "s",
+        };
+      },
+    };
+    await runSerial(
+      [{ agent: "x", task: "t1" }],
+      {
+        onBlocked: () => {},
+        writeArtifact: (i, body) => { calls.push({ i, body }); return null; },
+      },
+      deps,
+    );
+    assert.equal(calls.length, 0);
+  });
+});
+
 describe("runSerial state + index annotation", () => {
   it("annotates every successful step with state: 'completed' and input-order index", async () => {
     const { deps } = fakeDeps([{ finalMessage: "A" }, { finalMessage: "B" }]);

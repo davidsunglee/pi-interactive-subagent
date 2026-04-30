@@ -46,6 +46,15 @@ export interface RunSerialOpts {
    * sweep when blocked:true is returned.
    */
   onBlocked?: (taskIndex: number, payload: { sessionKey: string; message: string; partial: OrchestratedTaskResult }) => void;
+  /**
+   * When set, runSerial calls this once per task that reaches a terminal
+   * state with a non-empty finalMessage, before invoking onTerminal. The
+   * returned path is merged into the internal OrchestrationResult and the
+   * OrchestratedTaskResult passed to onTerminal as `artifactPath`. Empty
+   * finalMessage skips the call (the task's artifactPath stays absent/null).
+   * Returning null also leaves artifactPath as null.
+   */
+  writeArtifact?: (taskIndex: number, finalMessage: string) => string | null;
 }
 
 export interface RunSerialOutput {
@@ -169,6 +178,13 @@ export async function runSerial(
 
     result.index = i;
     result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
+    let artifactPath: string | null | undefined = undefined;
+    if (opts.writeArtifact && result.finalMessage && result.finalMessage.length > 0) {
+      artifactPath = opts.writeArtifact(i, result.finalMessage);
+    }
+    if (artifactPath !== undefined) {
+      result = { ...result, artifactPath };
+    }
     results.push(result);
     opts.onTerminal?.(i, {
       name: result.name,
@@ -176,6 +192,7 @@ export async function runSerial(
       state: result.state,
       finalMessage: result.finalMessage,
       transcriptPath: result.transcriptPath ?? null,
+      artifactPath: result.artifactPath ?? null,
       elapsedMs: result.elapsedMs,
       exitCode: result.exitCode,
       sessionKey: result.sessionKey,

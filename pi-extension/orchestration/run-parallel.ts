@@ -52,6 +52,13 @@ export interface RunParallelOpts {
    * (the post-loop sweep skips them when onBlocked is set).
    */
   onBlocked?: (taskIndex: number, payload: { sessionKey: string; message: string; partial: OrchestratedTaskResult }) => void;
+  /**
+   * Mirror of runSerial's writeArtifact hook. Called once per task slot that
+   * reaches a terminal state with non-empty finalMessage, before onTerminal.
+   * Skipped for blocked slots (registry-owned) and synthetic post-loop
+   * cancellation rows (empty finalMessage).
+   */
+  writeArtifact?: (taskIndex: number, finalMessage: string) => string | null;
 }
 
 export interface RunParallelOutput {
@@ -155,6 +162,13 @@ export async function runParallel(
 
       result.index = i;
       result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
+      let artifactPath: string | null | undefined = undefined;
+      if (opts.writeArtifact && result.finalMessage && result.finalMessage.length > 0) {
+        artifactPath = opts.writeArtifact(i, result.finalMessage);
+      }
+      if (artifactPath !== undefined) {
+        result = { ...result, artifactPath };
+      }
       results[i] = result;
       opts.onTerminal?.(i, {
         name: result.name,
@@ -168,6 +182,7 @@ export async function runParallel(
         error: result.error,
         usage: result.usage,
         transcript: result.transcript,
+        artifactPath: result.artifactPath ?? null,
       });
       if (result.exitCode !== 0 || result.error) {
         isError = true;

@@ -371,6 +371,126 @@ describe("runParallel onBlocked worker scheduling", () => {
   });
 });
 
+describe("runParallel writeArtifact hook", () => {
+  function makeDeps(finalMessages: string[]): LauncherDeps {
+    return {
+      async launch(task) {
+        return { id: task.name!, name: task.name!, startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        const idx = parseInt(handle.name.replace("t", ""), 10);
+        return {
+          name: handle.name,
+          finalMessage: finalMessages[idx] ?? "",
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: 1,
+        };
+      },
+    };
+  }
+
+  it("calls writeArtifact for each completed task slot in input order", async () => {
+    const calls: { i: number; body: string }[] = [];
+    const deps = makeDeps(["a", "b", "c", "d"]);
+    const tasks: OrchestrationTask[] = [
+      { name: "t0", agent: "x", task: "t" },
+      { name: "t1", agent: "x", task: "t" },
+      { name: "t2", agent: "x", task: "t" },
+      { name: "t3", agent: "x", task: "t" },
+    ];
+    const out = await runParallel(tasks, {
+      maxConcurrency: 4,
+      writeArtifact: (i, body) => {
+        calls.push({ i, body });
+        return `/tmp/p-${i}.md`;
+      },
+    }, deps);
+    assert.equal(calls.length, 4);
+    // Order of calls is non-deterministic; assert by input index
+    assert.equal(out.results[0].artifactPath, "/tmp/p-0.md");
+    assert.equal(out.results[1].artifactPath, "/tmp/p-1.md");
+    assert.equal(out.results[2].artifactPath, "/tmp/p-2.md");
+    assert.equal(out.results[3].artifactPath, "/tmp/p-3.md");
+  });
+
+  it("does not call writeArtifact for blocked slots", async () => {
+    const calls: number[] = [];
+    const deps: LauncherDeps = {
+      async launch(task) {
+        return { id: task.name!, name: task.name!, startTime: Date.now(), sessionKey: `/sess/${task.name}` };
+      },
+      async waitForCompletion(handle) {
+        if (handle.name === "t0") {
+          return {
+            name: handle.name,
+            finalMessage: "blocked body",
+            transcriptPath: null,
+            exitCode: 0,
+            elapsedMs: 1,
+            sessionKey: "/sess/t0",
+            ping: { name: "caller_ping", message: "need input" },
+          };
+        }
+        return {
+          name: handle.name,
+          finalMessage: "completed body",
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: 1,
+        };
+      },
+    };
+    const out = await runParallel(
+      [
+        { name: "t0", agent: "x", task: "t" },
+        { name: "t1", agent: "x", task: "t" },
+      ],
+      {
+        maxConcurrency: 2,
+        onBlocked: () => {},
+        writeArtifact: (i, _body) => {
+          calls.push(i);
+          return `/tmp/p-${i}.md`;
+        },
+      },
+      deps,
+    );
+    // Only slot 1 (completed) should have triggered writeArtifact
+    assert.deepEqual(calls, [1]);
+    assert.equal(out.results[1].artifactPath, "/tmp/p-1.md");
+    // Blocked slot is registry-owned (undefined), not in out.results
+    assert.equal(out.results[0], undefined);
+  });
+
+  it("does not call writeArtifact for synthetic post-loop cancelled rows", async () => {
+    const calls: number[] = [];
+    const ac = new AbortController();
+    ac.abort();
+    const deps: LauncherDeps = {
+      async launch() { return { id: "x", name: "t", startTime: Date.now() }; },
+      async waitForCompletion(h) {
+        return { name: h.name, finalMessage: "", transcriptPath: null, exitCode: 0, elapsedMs: 1 };
+      },
+    };
+    await runParallel(
+      [
+        { name: "t0", agent: "x", task: "t" },
+        { name: "t1", agent: "x", task: "t" },
+      ],
+      {
+        signal: ac.signal,
+        writeArtifact: (i, _body) => {
+          calls.push(i);
+          return `/tmp/p-${i}.md`;
+        },
+      },
+      deps,
+    );
+    assert.deepEqual(calls, []);
+  });
+});
+
 describe("runParallel state + index annotation", () => {
   it("annotates successful tasks with state: 'completed' and failures with 'failed', each with its input-order index", async () => {
     const deps: LauncherDeps = {
