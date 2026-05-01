@@ -4,6 +4,7 @@ import { runSerial } from "./run-serial.ts";
 import { runParallel } from "./run-parallel.ts";
 import { OrchestrationTaskSchema, type LauncherDeps, type OrchestratedTaskResult, type OrchestrationResult, type OrchestrationTask } from "./types.ts";
 import type { Registry } from "./registry.ts";
+import { renderRichSubagentResult, toTaskRows } from "../subagents/ui/headless-render.ts";
 
 function continueSerialFromIndex(opts: {
   orchestrationId: string;
@@ -127,6 +128,17 @@ export function registerOrchestrationTools(
         "Run a sequence of subagent tasks in order. Each task's output is available to the next " +
         "as `{previous}`. Stops on first failure. Blocks until the sequence completes.",
       parameters: SerialParams,
+      renderResult(result: any, { expanded }: { expanded: boolean }, theme: any) {
+        const details = result.details as { results?: any[]; isError?: boolean; inflight?: boolean };
+        return renderRichSubagentResult({
+          mode: "serial",
+          results: toTaskRows(details.results ?? []),
+          expanded,
+          theme,
+          isError: details.isError ?? false,
+          inflight: details.inflight === true,
+        });
+      },
       async execute(_id: string, params: SerialToolParams, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         for (const task of params.tasks) {
           const blocked = selfSpawn(task.agent);
@@ -272,6 +284,17 @@ export function registerOrchestrationTools(
         "tasks complete. Partial failures are reported independently. Detached spawn is " +
         "tmux-only; other backends focus the new pane.",
       parameters: ParallelParams,
+      renderResult(result: any, { expanded }: { expanded: boolean }, theme: any) {
+        const details = result.details as { results?: any[]; isError?: boolean; inflight?: boolean };
+        return renderRichSubagentResult({
+          mode: "parallel",
+          results: toTaskRows(details.results ?? []),
+          expanded,
+          theme,
+          isError: details.isError ?? false,
+          inflight: details.inflight === true,
+        });
+      },
       async execute(_id: string, params: ParallelToolParams, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         for (const task of params.tasks) {
           const blocked = selfSpawn(task.agent);

@@ -357,6 +357,44 @@ export interface RunningSubagent {
 /** All currently running subagents, keyed by id. */
 const runningSubagents = new Map<string, RunningSubagent>();
 
+// ── Headless lifecycle helpers (used by orchestration/default-deps.ts) ──
+
+export function registerHeadlessSubagent(entry: {
+  id: string;
+  name: string;
+  task: string;
+  agent?: string;
+  cli?: string;
+  abortController?: AbortController;
+  startTime?: number;
+}): void {
+  const running: RunningSubagent = {
+    id: entry.id,
+    name: entry.name,
+    task: entry.task,
+    agent: entry.agent,
+    cli: entry.cli,
+    backend: "headless",
+    startTime: entry.startTime ?? Date.now(),
+    abortController: entry.abortController,
+  };
+  runningSubagents.set(entry.id, running);
+  startWidgetRefresh();
+}
+
+export function updateHeadlessSubagentUsage(id: string, usage: UsageStats): void {
+  const entry = runningSubagents.get(id);
+  if (entry) {
+    entry.usage = usage;
+    updateWidget();
+  }
+}
+
+export function unregisterHeadlessSubagent(id: string): void {
+  runningSubagents.delete(id);
+  updateWidget();
+}
+
 // ── Widget management ──
 
 /** Latest ExtensionContext from session_start, used for widget updates. */
@@ -1382,9 +1420,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             cli: params.cli,
           };
           runningSubagents.set(id, running);
+          startWidgetRefresh();
 
           backend
-            .watch(handle, effectiveWatchSignal)
+            .watch(handle, effectiveWatchSignal, (partial) => {
+              if (partial.usage) updateHeadlessSubagentUsage(id, partial.usage);
+            })
             .then((result) => {
               const sessionRef = result.sessionId
                 ? `\n\nSession id: ${result.sessionId}`
