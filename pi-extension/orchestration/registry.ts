@@ -22,6 +22,7 @@ export interface OrchestrationCompleteEvent {
   orchestrationId: string;
   results: OrchestratedTaskResult[];
   isError: boolean;
+  mode: OrchestrationMode;
 }
 
 export interface OrchestrationBlockedEvent {
@@ -163,6 +164,7 @@ export function createRegistry(emit: RegistryEmitter, hooks: RegistryHooks = {})
       orchestrationId: entry.id,
       results: entry.tasks.map((t) => ({ ...t })),
       isError,
+      mode: entry.config.mode,
     });
     // Clear ownership entries for this orchestration.
     for (const [key, own] of ownership) {

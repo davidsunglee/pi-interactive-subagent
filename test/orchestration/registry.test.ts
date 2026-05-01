@@ -480,6 +480,40 @@ describe("createRegistry onResumeTerminal continuation gating", () => {
   });
 });
 
+describe("createRegistry OrchestrationCompleteEvent carries mode", () => {
+  it("serial dispatch emits orchestration_complete with mode: 'serial'", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: {
+        mode: "serial",
+        tasks: [{ name: "a", agent: "x", task: "t1" }, { name: "b", agent: "x", task: "t2" }],
+      },
+    });
+    reg.onTaskTerminal(id, 0, { name: "a", index: 0, state: "completed", exitCode: 0, elapsedMs: 1 });
+    reg.onTaskTerminal(id, 1, { name: "b", index: 1, state: "completed", exitCode: 0, elapsedMs: 1 });
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].kind, "orchestration_complete");
+    assert.equal(emitted[0].mode, "serial", "serial dispatch must emit mode:'serial'");
+  });
+
+  it("parallel dispatch emits orchestration_complete with mode: 'parallel'", () => {
+    const { emitter, emitted } = makeEmitterSpy();
+    const reg = createRegistry(emitter);
+    const id = reg.dispatchAsync({
+      config: {
+        mode: "parallel",
+        tasks: [{ name: "a", agent: "x", task: "t1" }, { name: "b", agent: "x", task: "t2" }],
+      },
+    });
+    reg.onTaskTerminal(id, 0, { name: "a", index: 0, state: "completed", exitCode: 0, elapsedMs: 1 });
+    reg.onTaskTerminal(id, 1, { name: "b", index: 1, state: "completed", exitCode: 0, elapsedMs: 1 });
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].kind, "orchestration_complete");
+    assert.equal(emitted[0].mode, "parallel", "parallel dispatch must emit mode:'parallel'");
+  });
+});
+
 describe("createRegistry onResumeTerminal clears stale block-time usage/transcript (review-v5 finding 1)", () => {
   // Rationale: the pre-lifecycle resume path runs in the pane backend, which
   // does not populate `usage`/`transcript`. The headless backend freezes a
