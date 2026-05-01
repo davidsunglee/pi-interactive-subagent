@@ -1,20 +1,8 @@
 {
   "packages": [
-    {
-      "source": "~/Code/pi-subagent",
-      "extensions": [
-        "-index.ts"
-      ],
-      "skills": []
-    },
-    {
-      "source": "git:github.com/HazAT/pi-interactive-subagents",
-      "extensions": [],
-      "skills": []
-    }
   ],
   "extensions": [
-    "../pi-extension/subagents/index.ts"
+    "-../pi-extension/subagents/index.ts"
   ],
   "skills": [
     "./skills/run-integration-tests/SKILL.md"

@@ -223,12 +223,17 @@ function summarizeInflightParallel(
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (!r) {
-      lines.push(`- [${i + 1}]: (pending)`);
+      lines.push(`- [${i + 1}]: pending`);
       continue;
     }
-    const first = (r.finalMessage ?? "").split("\n").find((l) => l.trim()) ?? "";
-    const trimmed = first.length > 200 ? first.slice(0, 200) + "…" : first;
-    lines.push(`- ${r.name}: exit=${r.exitCode} (${r.elapsedMs}ms) — ${trimmed}`);
+    const state = r.state ?? deriveInflightState(r);
+    lines.push(`- ${r.name}: ${state}`);
   }
   return lines.join("\n");
+}
+
+function deriveInflightState(r: OrchestrationResult): string {
+  if (r.error) return "failed";
+  if (r.exitCode !== 0 && r.exitCode !== undefined) return "failed";
+  return "running";
 }

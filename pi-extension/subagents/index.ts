@@ -43,6 +43,10 @@ import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
+import type { UsageStats } from "./backends/types.ts";
+import { formatUsageStats } from "./ui/format.ts";
+import { renderRichSubagentResult, toTaskRows } from "./ui/headless-render.ts";
+import { createSubagentResultRenderer } from "./ui/subagent-result-renderer.ts";
 import {
   SubagentParams,
   type SubagentParamsType,
@@ -336,6 +340,8 @@ export interface RunningSubagent {
   abortController?: AbortController;
   cli?: string;
   sentinelFile?: string;
+  /** Headless-only: accumulated usage stats, populated as the run progresses. */
+  usage?: UsageStats;
   /**
    * Set on virtual rows installed when an orchestration task transitions to
    * `blocked`. Keyed externally on `(orchestrationId, taskIndex)` via the
@@ -352,6 +358,44 @@ export interface RunningSubagent {
 
 /** All currently running subagents, keyed by id. */
 const runningSubagents = new Map<string, RunningSubagent>();
+
+// ── Headless lifecycle helpers (used by orchestration/default-deps.ts) ──
+
+export function registerHeadlessSubagent(entry: {
+  id: string;
+  name: string;
+  task: string;
+  agent?: string;
+  cli?: string;
+  abortController?: AbortController;
+  startTime?: number;
+}): void {
+  const running: RunningSubagent = {
+    id: entry.id,
+    name: entry.name,
+    task: entry.task,
+    agent: entry.agent,
+    cli: entry.cli,
+    backend: "headless",
+    startTime: entry.startTime ?? Date.now(),
+    abortController: entry.abortController,
+  };
+  runningSubagents.set(entry.id, running);
+  startWidgetRefresh();
+}
+
+export function updateHeadlessSubagentUsage(id: string, usage: UsageStats): void {
+  const entry = runningSubagents.get(id);
+  if (entry) {
+    entry.usage = usage;
+    updateWidget();
+  }
+}
+
+export function unregisterHeadlessSubagent(id: string): void {
+  runningSubagents.delete(id);
+  updateWidget();
+}
 
 // ── Widget management ──
 
@@ -442,6 +486,10 @@ function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): st
     let right: string;
     if (agent.blocked) {
       right = " blocked — awaiting parent ";
+    } else if (agent.backend === "headless" && agent.usage) {
+      right = ` ${formatUsageStats(agent.usage)} `;
+    } else if (agent.backend === "headless") {
+      right = " running… ";
     } else if (agent.entries != null && agent.bytes != null) {
       right = ` ${agent.entries} msgs (${formatBytes(agent.bytes)}) `;
     } else if (agent.cli === "claude") {
@@ -1374,9 +1422,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             cli: params.cli,
           };
           runningSubagents.set(id, running);
+          startWidgetRefresh();
 
           backend
-            .watch(handle, effectiveWatchSignal)
+            .watch(handle, effectiveWatchSignal, (partial) => {
+              if (partial.usage) updateHeadlessSubagentUsage(id, partial.usage);
+            })
             .then((result) => {
               const sessionRef = result.sessionId
                 ? `\n\nSession id: ${result.sessionId}`
@@ -1409,6 +1460,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                     elapsed: result.elapsedMs / 1000,
                     ...(result.error ? { error: result.error } : {}),
                     ...(result.sessionId ? { claudeSessionId: result.sessionId } : {}),
+                    ...(result.transcript ? { transcript: result.transcript } : {}),
+                    ...(result.usage ? { usage: result.usage } : {}),
                   },
                 },
                 { triggerTurn: true, deliverAs: "steer" },
@@ -2035,68 +2088,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // ── subagent_result message renderer ──
   pi.registerMessageRenderer("subagent_result", (message, options, theme) => {
-    const details = message.details as any;
-    if (!details) return undefined;
-
-    return {
-      invalidate() {},
-      render(width: number): string[] {
-        const name = details.name ?? "subagent";
-        const exitCode = details.exitCode ?? 0;
-        const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
-        const bgFn =
-          exitCode === 0
-            ? (text: string) => theme.bg("toolSuccessBg", text)
-            : (text: string) => theme.bg("toolErrorBg", text);
-        const icon = exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
-        const status = exitCode === 0 ? "completed" : `failed (exit ${exitCode})`;
-        const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
-
-        const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "—")} ${status} ${theme.fg("dim", `(${elapsed})`)}`;
-        const rawContent = typeof message.content === "string" ? message.content : "";
-
-        // Clean summary (remove session ref and leading label for display)
-        const summary = rawContent
-          .replace(/\n\nSession: .+\nResume: .+$/, "")
-          .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
-          .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "");
-
-        // Build content for the box
-        const contentLines = [header];
-
-        if (options.expanded) {
-          // Full view: complete summary + session info
-          if (summary) {
-            for (const line of summary.split("\n")) {
-              contentLines.push(line.slice(0, width - 6));
-            }
-          }
-          if (details.sessionFile) {
-            contentLines.push("");
-            contentLines.push(theme.fg("dim", `Session: ${details.sessionFile}`));
-            contentLines.push(theme.fg("dim", `Resume:  pi --session ${details.sessionFile}`));
-          }
-        } else {
-          // Collapsed: preview + expand hint
-          if (summary) {
-            const previewLines = summary.split("\n").slice(0, 5);
-            for (const line of previewLines) {
-              contentLines.push(theme.fg("dim", line.slice(0, width - 6)));
-            }
-            const totalLines = summary.split("\n").length;
-            if (totalLines > 5) {
-              contentLines.push(theme.fg("muted", `… ${totalLines - 5} more lines`));
-            }
-          }
-          contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
-        }
-
-        // Render via Box for background + padding, with blank line above for separation
-        const box = new Box(1, 1, bgFn);
-        box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
-      },
-    };
+    return createSubagentResultRenderer(message as any, options, theme as any);
   });
 
   // ── subagent_ping message renderer ──
@@ -2143,23 +2135,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     return {
       invalidate() {},
       render(width: number): string[] {
-        const id = details.orchestrationId ?? "?";
-        const count = details.results?.length ?? 0;
-        const isError = !!details.isError;
-        const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-        const status = isError ? "completed with errors" : "completed";
-        const header =
-          `${icon} ${theme.fg("toolTitle", theme.bold("Orchestration"))} ` +
-          theme.fg("dim", id) + " — " + status + theme.fg("dim", ` (${count} task(s))`);
-        const lines: string[] = [header];
-        for (const r of details.results ?? []) {
-          const stateIcon = r.state === "completed" ? theme.fg("success", "✓")
-            : r.state === "failed" ? theme.fg("error", "✗")
-            : r.state === "cancelled" ? theme.fg("dim", "○")
-            : theme.fg("dim", "·");
-          lines.push(`  ${stateIcon} ${r.name} — ${r.state}`);
-        }
-        return ["", ...lines.map((l) => l.slice(0, width))];
+        const mode = details.mode ?? "serial";
+        const rows = toTaskRows(details.results ?? []);
+        const component = renderRichSubagentResult({
+          mode,
+          results: rows,
+          expanded: _options.expanded,
+          theme,
+          isError: details.isError,
+        });
+        return ["", ...component.render(width)];
       },
     };
   });

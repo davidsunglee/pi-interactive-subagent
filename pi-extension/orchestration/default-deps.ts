@@ -3,6 +3,11 @@ import { makeHeadlessBackend } from "../subagents/backends/headless.ts";
 import { makePaneBackend } from "../subagents/backends/pane.ts";
 import { selectBackend } from "../subagents/backends/select.ts";
 import type { Backend, BackendLaunchParams } from "../subagents/backends/types.ts";
+import {
+  registerHeadlessSubagent,
+  updateHeadlessSubagentUsage,
+  unregisterHeadlessSubagent,
+} from "../subagents/index.ts";
 import type {
   LauncherDeps,
   LaunchedHandle,
@@ -30,8 +35,8 @@ export function makeDefaultDeps(ctx: {
   sessionManager: ExtensionContext["sessionManager"];
   cwd: string;
 }): LauncherDeps {
-  const backend: Backend =
-    selectBackend() === "headless" ? makeHeadlessBackend(ctx) : makePaneBackend(ctx);
+  const isHeadless = selectBackend() === "headless";
+  const backend: Backend = isHeadless ? makeHeadlessBackend(ctx) : makePaneBackend(ctx);
 
   return {
     async launch(
@@ -40,7 +45,18 @@ export function makeDefaultDeps(ctx: {
       signal?: AbortSignal,
     ): Promise<LaunchedHandle> {
       const params: BackendLaunchParams = task;
-      return backend.launch(params, defaultFocus, signal);
+      const handle = await backend.launch(params, defaultFocus, signal);
+      if (isHeadless) {
+        registerHeadlessSubagent({
+          id: handle.id,
+          name: handle.name,
+          task: task.task,
+          agent: task.agent,
+          cli: task.cli,
+          startTime: handle.startTime,
+        });
+      }
+      return handle;
     },
 
     async waitForCompletion(
@@ -49,11 +65,15 @@ export function makeDefaultDeps(ctx: {
       onUpdate?: (partial: OrchestrationResult) => void,
       hooks?: WaitForCompletionHooks,
     ): Promise<OrchestrationResult> {
-      const result = await backend.watch(
-        handle,
-        signal,
-        onUpdate
-          ? (partial) => {
+      try {
+        const result = await backend.watch(
+          handle,
+          signal,
+          (partial) => {
+            if (isHeadless && partial.usage) {
+              updateHeadlessSubagentUsage(handle.id, partial.usage);
+            }
+            if (onUpdate) {
               onUpdate({
                 name: partial.name,
                 finalMessage: partial.finalMessage,
@@ -68,22 +88,27 @@ export function makeDefaultDeps(ctx: {
                 ping: partial.ping,
               });
             }
-          : undefined,
-        hooks,
-      );
-      return {
-        name: result.name,
-        finalMessage: result.finalMessage,
-        transcriptPath: result.transcriptPath,
-        exitCode: result.exitCode,
-        elapsedMs: result.elapsedMs,
-        sessionId: result.sessionId,
-        error: result.error,
-        usage: result.usage,
-        transcript: result.transcript,
-        sessionKey: result.sessionKey,
-        ping: result.ping,
-      };
+          },
+          hooks,
+        );
+        return {
+          name: result.name,
+          finalMessage: result.finalMessage,
+          transcriptPath: result.transcriptPath,
+          exitCode: result.exitCode,
+          elapsedMs: result.elapsedMs,
+          sessionId: result.sessionId,
+          error: result.error,
+          usage: result.usage,
+          transcript: result.transcript,
+          sessionKey: result.sessionKey,
+          ping: result.ping,
+        };
+      } finally {
+        if (isHeadless) {
+          unregisterHeadlessSubagent(handle.id);
+        }
+      }
     },
   };
 }
