@@ -79,7 +79,7 @@ export function createSubagentResultRenderer(
           expanded: options.expanded,
           theme,
         });
-        return component.render(width);
+        return ["", ...component.render(width)];
       }
 
       // Pane / legacy shape: original box rendering

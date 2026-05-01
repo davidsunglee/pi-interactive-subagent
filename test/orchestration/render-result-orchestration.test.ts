@@ -108,9 +108,9 @@ describe("renderRichSubagentResult — serial collapsed", () => {
 });
 
 describe("renderRichSubagentResult — serial expanded", () => {
-  it("contains '─── Task ───' divider for expanded task blocks", () => {
+  it("omits an empty '─── Task ───' divider for orchestration rows without task text", () => {
     const output = renderToString("serial", true);
-    assert.ok(output.includes("─── Task ───"), `expected '─── Task ───' in:\n${output}`);
+    assert.ok(!output.includes("─── Task ───"), `expected no empty task divider in:\n${output}`);
   });
 
   it("contains the finalMessage 'Done!' from task-one", () => {
@@ -154,9 +154,9 @@ describe("renderRichSubagentResult — parallel collapsed", () => {
 });
 
 describe("renderRichSubagentResult — parallel expanded", () => {
-  it("contains '─── Task ───' divider for expanded task blocks", () => {
+  it("omits an empty '─── Task ───' divider for orchestration rows without task text", () => {
     const output = renderToString("parallel", true);
-    assert.ok(output.includes("─── Task ───"), `expected '─── Task ───' in:\n${output}`);
+    assert.ok(!output.includes("─── Task ───"), `expected no empty task divider in:\n${output}`);
   });
 
   it("contains the finalMessage 'Done!' from task-one", () => {

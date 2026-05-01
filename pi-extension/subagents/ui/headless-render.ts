@@ -123,9 +123,12 @@ function renderTaskBlock(container: Container, r: TaskRow, opts: RenderOpts): vo
 
   // Expanded-only: task + output
   if (opts.expanded) {
-    container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
-    container.addChild(new Text(theme.fg("dim", r.task ?? ""), 0, 0));
+    const taskText = (r.task ?? "").trim();
+    if (taskText) {
+      container.addChild(new Spacer(1));
+      container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
+      container.addChild(new Text(theme.fg("dim", taskText), 0, 0));
+    }
     container.addChild(new Spacer(1));
     container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
     const finalMsg = (r.finalMessage ?? "").trim();

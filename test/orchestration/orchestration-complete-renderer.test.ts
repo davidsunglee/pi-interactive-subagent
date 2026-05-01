@@ -110,9 +110,9 @@ describe("orchestration_complete renderer — serial collapsed", () => {
 });
 
 describe("orchestration_complete renderer — serial expanded", () => {
-  it("contains '─── Task ───' divider for expanded task blocks", () => {
+  it("omits an empty '─── Task ───' divider for orchestration rows without task text", () => {
     const output = drive("serial", true);
-    assert.ok(output.includes("─── Task ───"), `expected '─── Task ───' in:\n${output}`);
+    assert.ok(!output.includes("─── Task ───"), `expected no empty task divider in:\n${output}`);
   });
 
   it("contains the finalMessage 'Done!' from task-one", () => {
@@ -144,9 +144,9 @@ describe("orchestration_complete renderer — parallel collapsed", () => {
 });
 
 describe("orchestration_complete renderer — parallel expanded", () => {
-  it("contains '─── Task ───' divider for expanded task blocks", () => {
+  it("omits an empty '─── Task ───' divider for orchestration rows without task text", () => {
     const output = drive("parallel", true);
-    assert.ok(output.includes("─── Task ───"), `expected '─── Task ───' in:\n${output}`);
+    assert.ok(!output.includes("─── Task ───"), `expected no empty task divider in:\n${output}`);
   });
 
   it("contains the finalMessage 'Done!' from task-one", () => {

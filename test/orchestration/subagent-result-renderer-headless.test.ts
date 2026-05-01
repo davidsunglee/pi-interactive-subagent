@@ -73,6 +73,13 @@ describe("subagent_result renderer — headless shape", () => {
     },
   };
 
+  it("starts with the same blank spacer as pane-shaped results", () => {
+    const renderer = createSubagentResultRenderer(message, fakeOptions, fakeTheme);
+    assert.ok(renderer, "renderer should not be undefined");
+    const lines = renderer!.render(80);
+    assert.equal(lines[0], "", "headless rich results should preserve the leading blank spacer");
+  });
+
   it("renders success icon ✓ for completed headless subagent", () => {
     const renderer = createSubagentResultRenderer(message, fakeOptions, fakeTheme);
     assert.ok(renderer, "renderer should not be undefined");
