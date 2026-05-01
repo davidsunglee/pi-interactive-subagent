@@ -43,6 +43,8 @@ import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
+import type { UsageStats } from "./backends/types.ts";
+import { formatUsageStats } from "./ui/format.ts";
 import {
   SubagentParams,
   type SubagentParamsType,
@@ -336,6 +338,8 @@ export interface RunningSubagent {
   abortController?: AbortController;
   cli?: string;
   sentinelFile?: string;
+  /** Headless-only: accumulated usage stats, populated as the run progresses. */
+  usage?: UsageStats;
   /**
    * Set on virtual rows installed when an orchestration task transitions to
    * `blocked`. Keyed externally on `(orchestrationId, taskIndex)` via the
@@ -442,6 +446,10 @@ function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): st
     let right: string;
     if (agent.blocked) {
       right = " blocked — awaiting parent ";
+    } else if (agent.backend === "headless" && agent.usage) {
+      right = ` ${formatUsageStats(agent.usage)} `;
+    } else if (agent.backend === "headless") {
+      right = " running… ";
     } else if (agent.entries != null && agent.bytes != null) {
       right = ` ${agent.entries} msgs (${formatBytes(agent.bytes)}) `;
     } else if (agent.cli === "claude") {
