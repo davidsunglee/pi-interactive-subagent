@@ -1103,6 +1103,54 @@ export async function watchSubagent(
   // Pi children: fire immediately (session file known at launch time).
   if (running.cli !== "claude") maybeFire(running.sessionFile);
 
+  // Shared per-tick + final-drain body for pi tailing. Using one helper keeps
+  // the final drain (after pollForExit returns) from drifting away from the
+  // per-tick body. Returns true iff state changed (and an onUpdate was emitted).
+  const drainPiTail = (): boolean => {
+    try {
+      if (!sessionFile || !existsSync(sessionFile)) return false;
+      const delta = tailPiSessionEntries(sessionFile, piTailState);
+      let changed = false;
+      for (const msg of delta.messages) {
+        transcript.push(projectPiMessageToTranscript(msg));
+        changed = true;
+      }
+      for (const am of delta.assistantMessages) {
+        usage.turns++;
+        const u: any = (am as any).usage;
+        if (u) {
+          usage.input += u.input ?? 0;
+          usage.output += u.output ?? 0;
+          usage.cacheRead += u.cacheRead ?? 0;
+          usage.cacheWrite += u.cacheWrite ?? 0;
+          usage.cost += u.cost?.total ?? 0;
+          usage.contextTokens = u.totalTokens ?? usage.contextTokens;
+        }
+        changed = true;
+      }
+      if (changed) {
+        running.usage = { ...usage };
+        try {
+          opts?.onUpdate?.({
+            name,
+            task,
+            summary: "",
+            transcriptPath: null,
+            exitCode: 0,
+            elapsed: Math.floor((Date.now() - startTime) / 1000),
+            transcript: [...transcript],
+            usage: { ...usage },
+          });
+        } catch {
+          // Defensive: never let an onUpdate throw kill the watcher.
+        }
+      }
+      return changed;
+    } catch {
+      return false;
+    }
+  };
+
   try {
     const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
       interval: 1000,
@@ -1110,45 +1158,7 @@ export async function watchSubagent(
       sentinelFile: running.sentinelFile,
       onTick() {
         if (running.cli !== "claude") {
-          try {
-            if (!sessionFile || !existsSync(sessionFile)) return;
-            const delta = tailPiSessionEntries(sessionFile, piTailState);
-            let changed = false;
-            for (const msg of delta.messages) {
-              transcript.push(projectPiMessageToTranscript(msg));
-              changed = true;
-            }
-            for (const am of delta.assistantMessages) {
-              usage.turns++;
-              const u: any = (am as any).usage;
-              if (u) {
-                usage.input += u.input ?? 0;
-                usage.output += u.output ?? 0;
-                usage.cacheRead += u.cacheRead ?? 0;
-                usage.cacheWrite += u.cacheWrite ?? 0;
-                usage.cost += u.cost?.total ?? 0;
-                usage.contextTokens = u.totalTokens ?? usage.contextTokens;
-              }
-              changed = true;
-            }
-            if (changed) {
-              running.usage = { ...usage };
-              try {
-                opts?.onUpdate?.({
-                  name,
-                  task,
-                  summary: "",
-                  transcriptPath: null,
-                  exitCode: 0,
-                  elapsed: Math.floor((Date.now() - startTime) / 1000),
-                  transcript: [...transcript],
-                  usage: { ...usage },
-                });
-              } catch {
-                // Defensive: never let an onUpdate throw kill the watcher.
-              }
-            }
-          } catch {}
+          drainPiTail();
         } else {
           // Claude: attempt early session key resolution on each tick.
           maybeFire(readClaudeSessionId());
@@ -1213,6 +1223,16 @@ export async function watchSubagent(
     });
 
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
+
+    // Final pi-tail drain: pollForExit checks .exit/sentinel BEFORE calling
+    // onTick, so a fast subagent that finishes before the first tick — or any
+    // subagent that writes its last entries between the final tick and exit —
+    // would otherwise return with empty transcript/usage. Replay the same
+    // per-tick body once more so the resolved BackendResult always reflects
+    // the final session state.
+    if (running.cli !== "claude") {
+      drainPiTail();
+    }
 
     if (running.cli === "claude") {
       // LOAD-BEARING race-closer: fire onSessionKey synchronously before return
