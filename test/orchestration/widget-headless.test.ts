@@ -13,7 +13,7 @@ describe("subagents widget headless rendering", () => {
     try {
       const lines: string[] = testApi.renderSubagentWidgetLines(
         [
-          // pane row: entries + bytes present
+          // pane row: usage present — should render usage stats
           {
             id: "p1",
             name: "PaneAgent",
@@ -22,6 +22,15 @@ describe("subagents widget headless rendering", () => {
             startTime: 1_000_000 - 5_000,
             entries: 7,
             bytes: 2048,
+            usage: {
+              input: 5000,
+              output: 300,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.0010,
+              contextTokens: 0,
+              turns: 2,
+            },
           },
           // headless row: usage present
           {
@@ -40,7 +49,7 @@ describe("subagents widget headless rendering", () => {
               turns: 3,
             },
           },
-          // headless row: no usage yet
+          // headless row: no usage yet, no cli — shows starting…
           {
             id: "h2",
             name: "HeadlessAgent2",
@@ -59,8 +68,20 @@ describe("subagents widget headless rendering", () => {
       const headlessUsageRow = lines[2];
       const headlessNoUsageRow = lines[3];
 
-      // Pane row should contain entry/bytes format
-      assert.ok(paneRow.includes("msgs ("), `pane row should contain "msgs (" — got: ${paneRow}`);
+      // Pane row should contain usage stats (↑/↓ token markers)
+      assert.ok(
+        paneRow.includes("↑") || paneRow.includes("↓"),
+        `pane row should contain usage stats markers — got: ${paneRow}`,
+      );
+      assert.ok(
+        paneRow.includes("2 turns"),
+        `pane row should contain "2 turns" — got: ${paneRow}`,
+      );
+
+      // Old msgs ( format must NOT appear anywhere
+      for (const line of lines) {
+        assert.ok(!line.includes("msgs ("), `no row should contain "msgs (" — got: ${line}`);
+      }
 
       // Headless-with-usage should contain formatted usage stats
       assert.ok(
@@ -80,10 +101,10 @@ describe("subagents widget headless rendering", () => {
         `headless-usage row should contain "$0.0042" — got: ${headlessUsageRow}`,
       );
 
-      // Headless-without-usage should show running…
+      // Headless-without-usage, no cli — shows starting…
       assert.ok(
-        headlessNoUsageRow.includes("running…"),
-        `headless-no-usage row should contain "running…" — got: ${headlessNoUsageRow}`,
+        headlessNoUsageRow.includes("starting…"),
+        `headless-no-usage row should contain "starting…" — got: ${headlessNoUsageRow}`,
       );
     } finally {
       Date.now = originalNow;

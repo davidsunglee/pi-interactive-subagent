@@ -495,12 +495,8 @@ function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): st
     let right: string;
     if (agent.blocked) {
       right = " blocked — awaiting parent ";
-    } else if (agent.backend === "headless" && agent.usage) {
+    } else if (agent.usage) {
       right = ` ${formatUsageStats(agent.usage)} `;
-    } else if (agent.backend === "headless") {
-      right = " running… ";
-    } else if (agent.entries != null && agent.bytes != null) {
-      right = ` ${agent.entries} msgs (${formatBytes(agent.bytes)}) `;
     } else if (agent.cli === "claude") {
       right = " running… ";
     } else {
@@ -1753,7 +1749,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         startWidgetRefresh();
 
         // Fire-and-forget: start watching in background
-        watchSubagent(running, watcherAbort.signal)
+        watchSubagent(running, watcherAbort.signal, {
+          onUpdate: (partial) => { if (partial.usage) running.usage = partial.usage; },
+        })
           .then((result) => {
             updateWidget(); // reflect removal from Map immediately
 
@@ -1798,6 +1796,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
+                  ...(result.transcript ? { transcript: result.transcript } : {}),
+                  ...(result.usage ? { usage: result.usage } : {}),
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },
