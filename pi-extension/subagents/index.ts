@@ -5,7 +5,6 @@ import { Box, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { dirname, join } from "node:path";
 import {
   readdirSync,
-  statSync,
   readFileSync,
   writeFileSync,
   existsSync,
@@ -42,6 +41,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
+import { projectPiMessageToTranscript, tailPiSessionEntries } from "./backends/pi-projection.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
 import type { UsageStats, TranscriptMessage } from "./backends/types.ts";
 import { formatUsageStats } from "./ui/format.ts";
@@ -1039,6 +1039,50 @@ export async function watchSubagent(
     } catch { return undefined; }
   };
 
+  // ── Task 3: pi-side live transcript / usage tailing ──────────────────────
+  const transcript: TranscriptMessage[] = [];
+  const usage: UsageStats = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    contextTokens: 0,
+    turns: 0,
+  };
+  const piTailState = { offset: 0, pendingTail: "" };
+  let claudeTranscriptPathForTail: string | null = null;
+  let claudeFileOffset = 0;
+  let claudePendingTail = "";
+  let claudeFinalUsage: UsageStats | null = null;
+  void claudeTranscriptPathForTail;
+  void claudeFileOffset;
+  void claudePendingTail;
+  void claudeFinalUsage;
+
+  // Honor opts.tailStartLine for non-Claude resumes: skip past lines already
+  // observed by an earlier watcher so we don't re-emit them on resume.
+  if (
+    opts?.tailStartLine &&
+    opts.tailStartLine > 0 &&
+    running.cli !== "claude" &&
+    sessionFile
+  ) {
+    try {
+      if (existsSync(sessionFile)) {
+        const raw = readFileSync(sessionFile, "utf8");
+        const lines = raw.split("\n");
+        let charsConsumed = 0;
+        for (let i = 0; i < Math.min(opts.tailStartLine, lines.length); i++) {
+          charsConsumed += lines[i].length + 1;
+        }
+        piTailState.offset = Math.min(charsConsumed, raw.length);
+      }
+    } catch {
+      // Defensive: if seeking fails, fall back to offset 0 rather than failing.
+    }
+  }
+
   // Pi children: fire immediately (session file known at launch time).
   if (running.cli !== "claude") maybeFire(running.sessionFile);
 
@@ -1050,11 +1094,42 @@ export async function watchSubagent(
       onTick() {
         if (running.cli !== "claude") {
           try {
-            if (existsSync(sessionFile)) {
-              const stat = statSync(sessionFile);
-              const raw = readFileSync(sessionFile, "utf8");
-              running.entries = raw.split("\n").filter((l) => l.trim()).length;
-              running.bytes = stat.size;
+            if (!sessionFile || !existsSync(sessionFile)) return;
+            const delta = tailPiSessionEntries(sessionFile, piTailState);
+            let changed = false;
+            for (const msg of delta.messages) {
+              transcript.push(projectPiMessageToTranscript(msg));
+              changed = true;
+            }
+            for (const am of delta.assistantMessages) {
+              usage.turns++;
+              const u: any = (am as any).usage;
+              if (u) {
+                usage.input += u.input ?? 0;
+                usage.output += u.output ?? 0;
+                usage.cacheRead += u.cacheRead ?? 0;
+                usage.cacheWrite += u.cacheWrite ?? 0;
+                usage.cost += u.cost?.total ?? 0;
+                usage.contextTokens = u.totalTokens ?? usage.contextTokens;
+              }
+              changed = true;
+            }
+            if (changed) {
+              running.usage = { ...usage };
+              try {
+                opts?.onUpdate?.({
+                  name,
+                  task,
+                  summary: "",
+                  transcriptPath: null,
+                  exitCode: 0,
+                  elapsed: Math.floor((Date.now() - startTime) / 1000),
+                  transcript: [...transcript],
+                  usage: { ...usage },
+                });
+              } catch {
+                // Defensive: never let an onUpdate throw kill the watcher.
+              }
             }
           } catch {}
         } else {
@@ -1192,6 +1267,8 @@ export async function watchSubagent(
       elapsed,
       sessionFile,
       transcriptPath: existsSync(sessionFile) ? sessionFile : null,
+      transcript: [...transcript],
+      usage: { ...usage },
       ping: result.ping,
     };
   } catch (err: any) {
@@ -1209,6 +1286,8 @@ export async function watchSubagent(
         elapsed: Math.floor((Date.now() - startTime) / 1000),
         transcriptPath: null,
         error: "cancelled",
+        transcript: [...transcript],
+        usage: { ...usage },
       };
     }
     return {
@@ -1219,6 +1298,8 @@ export async function watchSubagent(
       elapsed: Math.floor((Date.now() - startTime) / 1000),
       transcriptPath: null,
       error: err?.message ?? String(err),
+      transcript: [...transcript],
+      usage: { ...usage },
     };
   }
 }
