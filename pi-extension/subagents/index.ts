@@ -43,7 +43,7 @@ import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
-import type { UsageStats } from "./backends/types.ts";
+import type { UsageStats, TranscriptMessage } from "./backends/types.ts";
 import { formatUsageStats } from "./ui/format.ts";
 import { renderRichSubagentResult, toTaskRows } from "./ui/headless-render.ts";
 import { createSubagentResultRenderer } from "./ui/subagent-result-renderer.ts";
@@ -318,6 +318,10 @@ export interface SubagentResult {
   elapsed: number;
   error?: string;
   ping?: { name: string; message: string };
+  /** Live transcript accumulated during the run; populated for both pi and Claude pane backends. */
+  transcript?: TranscriptMessage[];
+  /** Live usage stats accumulated during the run; populated for both pi and Claude pane backends. */
+  usage?: UsageStats;
 }
 
 /**
@@ -1004,7 +1008,11 @@ export function copyClaudeSession(
 export async function watchSubagent(
   running: RunningSubagent,
   signal: AbortSignal,
-  opts?: { onSessionKey?: (sessionKey: string) => void },
+  opts?: {
+    onSessionKey?: (sessionKey: string) => void;
+    onUpdate?: (partial: SubagentResult) => void;
+    tailStartLine?: number;
+  },
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running;
 
