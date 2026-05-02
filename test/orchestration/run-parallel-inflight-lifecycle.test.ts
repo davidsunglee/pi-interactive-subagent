@@ -83,7 +83,7 @@ describe("runParallel inflight lifecycle", () => {
       transcriptPath: null,
       exitCode: 0,
       elapsedMs: 100,
-      usage: { turns: 1, inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, cost: 0 },
+      usage: { turns: 1, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 30 },
     });
 
     await new Promise((r) => setImmediate(r));

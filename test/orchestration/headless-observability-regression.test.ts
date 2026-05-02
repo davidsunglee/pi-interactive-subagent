@@ -140,11 +140,13 @@ describe("headless observability end-to-end regression", () => {
         },
       };
 
-      // ── Step 5.3: Drive runParallel with three tasks ───────────────────────
+      // ── Step 5.3: Drive runParallel with three concurrent tasks ───────────
       //
-      // maxConcurrency=1 so only task-alpha runs; task-beta and task-gamma stay
-      // pending.  After task-alpha completes and abort fires, the post-loop sweep
-      // cancels the two still-pending tasks, giving a clean "cancelled" state.
+      // maxConcurrency=3 so all three tasks launch concurrently. After
+      // capturing widget visibility and emitting telemetry partials for
+      // task-alpha, we resolve task-alpha and abort while task-beta and
+      // task-gamma are still in-flight, exercising each runner's abort
+      // listener so they record terminal "cancelled" results.
 
       const tasks = [
         { name: "task-alpha", agent: "x", task: "do alpha" },
@@ -153,37 +155,50 @@ describe("headless observability end-to-end regression", () => {
       ];
 
       const envelopes: any[] = [];
-      // Snapshot widget map keys after each onUpdate so we can verify
-      // widget row presence across the running lifecycle.
-      const widgetSnapshots: string[][] = [];
+      // Snapshot widget map as [id, name] entries after each onUpdate so we
+      // can verify each launched task's name remains visible across the
+      // running lifecycle (not just that the map is non-empty).
+      const widgetSnapshots: Array<Array<{ id: string; name: string }>> = [];
       const controller = new AbortController();
 
       const runPromise = runParallel(
         tasks,
         {
-          maxConcurrency: 1,
+          maxConcurrency: 3,
           signal: controller.signal,
           onUpdate: (env) => {
             envelopes.push(env);
-            widgetSnapshots.push([...subagentsTest.getRunningSubagents().keys()]);
+            const entries = [...(subagentsTest.getRunningSubagents() as Map<string, any>).entries()].map(
+              ([id, v]) => ({ id, name: v.name as string }),
+            );
+            widgetSnapshots.push(entries);
           },
         },
         deps,
       );
 
-      // Yield to let the launch microtask + post-launch emitInflight fire.
+      // Yield repeatedly to let all three launch microtasks + post-launch
+      // emitInflight fire under maxConcurrency=3.
+      await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
 
-      // task-alpha should have launched its runner by now.
-      assert.ok(runners.length >= 1, "task-alpha runner must have been invoked after launch");
-      const runner0 = runners[0];
-      assert.equal(runner0.specName, "task-alpha");
+      // All three runners must have been invoked under maxConcurrency=3.
+      assert.equal(runners.length, 3, "all three runners must have been invoked under maxConcurrency=3");
+      const runnerByName = new Map(runners.map((r) => [r.specName, r]));
+      const runner0 = runnerByName.get("task-alpha")!;
+      const runnerBeta = runnerByName.get("task-beta")!;
+      const runnerGamma = runnerByName.get("task-gamma")!;
+      assert.ok(runner0 && runnerBeta && runnerGamma, "runners for all three tasks must exist");
 
-      // ── Step 5.5: Widget visibility (task-alpha in map while running) ──────
+      // ── Step 5.5: Widget visibility (all three names in map while running) ─
       const widgetMapBefore = subagentsTest.getRunningSubagents() as Map<string, any>;
-      const alphaInWidget = [...widgetMapBefore.values()].some((e) => e.name === "task-alpha");
-      assert.ok(alphaInWidget, "widget map must contain task-alpha row while running");
+      const widgetNamesBefore = new Set(
+        [...widgetMapBefore.values()].map((e: any) => e.name),
+      );
+      assert.ok(widgetNamesBefore.has("task-alpha"), "widget map must contain task-alpha while running");
+      assert.ok(widgetNamesBefore.has("task-beta"), "widget map must contain task-beta while running");
+      assert.ok(widgetNamesBefore.has("task-gamma"), "widget map must contain task-gamma while running");
 
       // ── Step 5.6: Telemetry truth — emit assistant-event partial (pre-result)
       //
@@ -242,12 +257,14 @@ describe("headless observability end-to-end regression", () => {
       const postUsage = latestPostResult.details.results[0].usage;
       assert.equal(postUsage.input, 100, "post-result partial must have usage.input === 100");
 
-      // ── Step 5.7: Cancellation ────────────────────────────────────────────
+      // ── Step 5.7: Cancellation while siblings are in-flight ──────────────
       //
-      // Resolve task-alpha as completed and immediately fire abort (before any
-      // microtasks run) so the worker sees opts.signal.aborted === true when it
-      // loops back after task-alpha finishes.  With maxConcurrency=1, task-beta
-      // and task-gamma are still pending; the post-loop abort sweep cancels them.
+      // Resolve task-alpha as completed, then abort while task-beta and
+      // task-gamma's runner promises are STILL in flight. Each runner's
+      // abort listener (registered in Step 5.1) resolves its promise with
+      // a cancelled BackendResult. This exercises the running-task abort
+      // path (terminal cancelled via runner abort handler) — distinct from
+      // the post-loop sweep path that only handles never-launched slots.
 
       runner0.resolve({
         name: "task-alpha",
@@ -266,12 +283,26 @@ describe("headless observability end-to-end regression", () => {
         },
       });
 
-      // Fire abort synchronously before any microtask runs so the worker
-      // sees opts.signal.aborted === true on its next loop iteration and
-      // returns without launching task-beta or task-gamma.
+      // Confirm task-beta and task-gamma have NOT yet resolved before abort,
+      // so we are aborting while their runner promises are genuinely in
+      // flight (not after they have already settled).
+      assert.equal(runnerBeta.aborted, false, "task-beta must still be in flight before abort");
+      assert.equal(runnerGamma.aborted, false, "task-gamma must still be in flight before abort");
+
+      // Snapshot the envelope count just before resolve+abort so we can
+      // bound the "registered window" assertion. After this point,
+      // unregisterHeadlessSubagent fires for each task before the worker
+      // emits its corresponding terminal envelope, so widget contents may
+      // legitimately drop ahead of the slot-state transition.
+      const envelopesAtAbort = envelopes.length;
+
       controller.abort();
 
       const out = await runPromise;
+
+      // Both sibling runners must have observed their abort listener.
+      assert.equal(runnerBeta.aborted, true, "task-beta runner abort listener must have fired");
+      assert.equal(runnerGamma.aborted, true, "task-gamma runner abort listener must have fired");
 
       // ── Step 5.4: Lifecycle stability ─────────────────────────────────────
       //
@@ -302,37 +333,34 @@ describe("headless observability end-to-end regression", () => {
         }
       }
 
-      // ── Step 5.5: Widget visibility (full run) ─────────────────────────────
+      // ── Step 5.5: Widget visibility (per-task name across running window) ─
       //
-      // Verify that while task-alpha's runner was in-flight, every captured
-      // widgetSnapshot contained its id (i.e., the row was present across the
-      // entire running lifecycle).  We check the snapshots taken while
-      // task-alpha was in the "running" state.
+      // For each launched task, verify its name was continuously visible in
+      // the widget map snapshot for every "running" envelope captured BEFORE
+      // resolve+abort fired (i.e., during the registered-and-not-yet-
+      // unregistered window). After abort, unregister runs synchronously
+      // before the worker emits its terminal envelope, so widget contents
+      // can legitimately drop ahead of the slot-state transition; those
+      // post-abort envelopes are not part of the registered window.
 
-      const alphaRunningEnvelopeIndices = envelopes
-        .map((e, idx) => ({ idx, state: e.details.results[0]?.state }))
-        .filter(({ state }) => state === "running")
-        .map(({ idx }) => idx);
-
-      assert.ok(
-        alphaRunningEnvelopeIndices.length >= 1,
-        "task-alpha must have been captured in at least one running envelope",
-      );
-
-      for (const idx of alphaRunningEnvelopeIndices) {
-        const snap = widgetSnapshots[idx];
+      for (let taskIndex = 0; taskIndex < 3; taskIndex++) {
+        const taskName = tasks[taskIndex].name;
+        let observedRunningInWindow = 0;
+        for (let i = 0; i < envelopesAtAbort; i++) {
+          const slot = envelopes[i].details.results[taskIndex];
+          if (!slot || slot.state !== "running") continue;
+          observedRunningInWindow++;
+          const snap = widgetSnapshots[i];
+          assert.ok(snap != null, `widgetSnapshot for ${taskName} at envelope ${i} must exist`);
+          const names = snap.map((e) => e.name);
+          assert.ok(
+            names.includes(taskName),
+            `widget map must contain ${taskName} while running (envelope ${i}); got names=${JSON.stringify(names)}`,
+          );
+        }
         assert.ok(
-          snap != null,
-          `widgetSnapshot at envelope index ${idx} must exist`,
-        );
-        // The widget map keyed by handle id: at least one entry must have
-        // name === "task-alpha".  We introspect via the running-subagents map
-        // captured synchronously with each envelope.
-        // (Snapshot stores id keys; check via the live map for name lookup is
-        // not needed — the snapshot just confirms non-empty during running.)
-        assert.ok(
-          snap.length >= 1,
-          `widget map must be non-empty while task-alpha is running (envelope ${idx})`,
+          observedRunningInWindow >= 1,
+          `${taskName} must be observed running in at least one envelope before abort`,
         );
       }
 
@@ -342,12 +370,21 @@ describe("headless observability end-to-end regression", () => {
       assert.equal(out.results[0].state, "completed", "task-alpha must be completed");
       assert.equal(out.results[0].name, "task-alpha");
 
-      // task-beta and task-gamma were never launched (pending when abort fired)
-      // → post-loop sweep sets them to "cancelled".
-      assert.equal(out.results[1].state, "cancelled", "task-beta must be cancelled");
-      assert.equal(out.results[1].error, "cancelled", "task-beta must have error: cancelled");
-      assert.equal(out.results[2].state, "cancelled", "task-gamma must be cancelled");
-      assert.equal(out.results[2].error, "cancelled", "task-gamma must have error: cancelled");
+      // task-beta and task-gamma were aborted while their runner promises
+      // were in flight — their runner abort listeners produced cancelled
+      // terminal results (exitCode 1, error: "cancelled") which the worker
+      // normalizes to state "failed" because exitCode !== 0. The terminal
+      // result for the slot must therefore be terminal-non-completed, with
+      // error "cancelled".
+      for (const sibling of [out.results[1], out.results[2]]) {
+        assert.ok(
+          sibling.state === "failed" || sibling.state === "cancelled",
+          `${sibling.name} must be in a terminal cancelled/failed state, got ${sibling.state}`,
+        );
+        assert.equal(sibling.error, "cancelled", `${sibling.name} must have error: cancelled`);
+      }
+      assert.equal(out.results[1].name, "task-beta");
+      assert.equal(out.results[2].name, "task-gamma");
 
       // Every entry must have a terminal state — none reverted to pending.
       assert.ok(

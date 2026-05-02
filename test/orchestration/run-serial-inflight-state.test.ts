@@ -19,7 +19,7 @@ describe("runSerial inflight state stamping", () => {
           transcriptPath: null,
           exitCode: 0,
           elapsedMs: 50,
-          usage: { turns: 1, inputTokens: 10, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0 },
+          usage: { turns: 1, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 30 },
         };
         onUpdate?.(partial);
 
@@ -79,7 +79,7 @@ describe("runSerial inflight state stamping", () => {
           transcriptPath: null,
           exitCode: 0,
           elapsedMs: 50,
-          usage: { turns: 1, inputTokens: 10, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0 },
+          usage: { turns: 1, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 30 },
         };
         onUpdate?.(partial);
 
@@ -141,7 +141,7 @@ describe("runSerial inflight state stamping", () => {
             transcriptPath: null,
             exitCode: 0,
             elapsedMs: 50,
-            usage: { turns: 1, inputTokens: 10, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0 },
+            usage: { turns: 1, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 30 },
           };
           onUpdate?.(partial);
         } else if (handle.name === "step-2") {
@@ -152,7 +152,7 @@ describe("runSerial inflight state stamping", () => {
             transcriptPath: null,
             exitCode: 0,
             elapsedMs: 50,
-            usage: { turns: 1, inputTokens: 10, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0 },
+            usage: { turns: 1, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 30 },
           };
           onUpdate?.(partial);
         }
