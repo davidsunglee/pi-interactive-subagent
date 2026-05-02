@@ -11,6 +11,10 @@ import {
   mkdirSync,
   copyFileSync,
   unlinkSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
 } from "node:fs";
 import {
   isMuxAvailable,
@@ -42,6 +46,7 @@ import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
 import { projectPiMessageToTranscript, tailPiSessionEntries } from "./backends/pi-projection.ts";
+import { parseClaudeStreamEvent, parseClaudeResult } from "./backends/claude-stream.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
 import type { UsageStats, TranscriptMessage } from "./backends/types.ts";
 import { formatUsageStats } from "./ui/format.ts";
@@ -1038,6 +1043,16 @@ export async function watchSubagent(
       return filename.endsWith(".jsonl") ? filename.slice(0, -".jsonl".length) : filename;
     } catch { return undefined; }
   };
+  const readClaudeTranscriptPath = (): string | null => {
+    if (running.cli !== "claude" || !running.sentinelFile) return null;
+    try {
+      const pointer = running.sentinelFile + ".transcript";
+      if (!existsSync(pointer)) return null;
+      const transcriptPath = readFileSync(pointer, "utf-8").trim();
+      if (!transcriptPath || !existsSync(transcriptPath)) return null;
+      return transcriptPath;
+    } catch { return null; }
+  };
 
   // ── Task 3: pi-side live transcript / usage tailing ──────────────────────
   const transcript: TranscriptMessage[] = [];
@@ -1055,10 +1070,16 @@ export async function watchSubagent(
   let claudeFileOffset = 0;
   let claudePendingTail = "";
   let claudeFinalUsage: UsageStats | null = null;
-  void claudeTranscriptPathForTail;
-  void claudeFileOffset;
-  void claudePendingTail;
-  void claudeFinalUsage;
+
+  const applyClaudeUsage = (u: UsageStats): void => {
+    usage.input = u.input;
+    usage.output = u.output;
+    usage.cacheRead = u.cacheRead;
+    usage.cacheWrite = u.cacheWrite;
+    usage.cost = u.cost;
+    usage.contextTokens = u.contextTokens;
+    usage.turns = u.turns;
+  };
 
   // Honor opts.tailStartLine for non-Claude resumes: skip past lines already
   // observed by an earlier watcher so we don't re-emit them on resume.
@@ -1135,6 +1156,62 @@ export async function watchSubagent(
         } else {
           // Claude: attempt early session key resolution on each tick.
           maybeFire(readClaudeSessionId());
+          try {
+            if (claudeTranscriptPathForTail === null) {
+              claudeTranscriptPathForTail = readClaudeTranscriptPath();
+              claudeFileOffset = 0;
+              claudePendingTail = "";
+            }
+            const tp = claudeTranscriptPathForTail;
+            if (!tp || !existsSync(tp)) return;
+            const stat = statSync(tp);
+            if (stat.size <= claudeFileOffset) return;
+            const buf = Buffer.alloc(stat.size - claudeFileOffset);
+            const fd = openSync(tp, "r");
+            try {
+              readSync(fd, buf, 0, buf.length, claudeFileOffset);
+            } finally { closeSync(fd); }
+            claudeFileOffset = stat.size;
+            const chunk = claudePendingTail + buf.toString("utf8");
+            const lines = chunk.split("\n");
+            claudePendingTail = lines.pop() ?? "";
+            let changed = false;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              let event: any;
+              try { event = JSON.parse(trimmed); } catch { continue; }
+              if (event?.type === "result") {
+                const r = parseClaudeResult(event);
+                claudeFinalUsage = r.usage;
+                applyClaudeUsage(r.usage);
+                changed = true;
+                continue;
+              }
+              const msgs = parseClaudeStreamEvent(event);
+              if (msgs && msgs.length > 0) {
+                for (const m of msgs) transcript.push(m);
+                changed = true;
+              }
+            }
+            if (changed) {
+              running.usage = { ...usage };
+              try {
+                opts?.onUpdate?.({
+                  name,
+                  task,
+                  summary: "",
+                  transcriptPath: null,
+                  exitCode: 0,
+                  elapsed: Math.floor((Date.now() - startTime) / 1000),
+                  transcript: [...transcript],
+                  usage: { ...usage },
+                });
+              } catch {
+                // Defensive: never let an onUpdate throw kill the watcher.
+              }
+            }
+          } catch {}
         }
       },
     });
@@ -1180,6 +1257,65 @@ export async function watchSubagent(
         if (archived) {
           sessionId = archived.sessionId;
           transcriptPath = archived.archivedPath;
+        }
+      }
+
+      // Post-mortem catch-up: if the live tail missed the result event or never
+      // observed any messages (e.g. one-turn autonomous run where the jsonl was
+      // archived/unlinked between ticks), re-parse the archived jsonl.
+      if (
+        transcriptPath
+        && (transcript.length === 0 || claudeFinalUsage === null || usage.turns === 0)
+      ) {
+        try {
+          const archiveContent = readFileSync(transcriptPath, "utf-8");
+          const liveLen = transcript.length;
+          const archiveTranscript: TranscriptMessage[] = [];
+          let archiveTerminalUsage: UsageStats | null = null;
+          for (const line of archiveContent.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let event: any;
+            try { event = JSON.parse(trimmed); } catch { continue; }
+            if (event?.type === "result") {
+              archiveTerminalUsage = parseClaudeResult(event).usage;
+              continue;
+            }
+            const msgs = parseClaudeStreamEvent(event);
+            if (msgs) archiveTranscript.push(...msgs);
+          }
+          let appended = false;
+          if (archiveTranscript.length > liveLen) {
+            for (let i = liveLen; i < archiveTranscript.length; i++) {
+              transcript.push(archiveTranscript[i]);
+            }
+            appended = true;
+          }
+          let usageChanged = false;
+          if (archiveTerminalUsage) {
+            claudeFinalUsage = archiveTerminalUsage;
+            applyClaudeUsage(archiveTerminalUsage);
+            usageChanged = true;
+          }
+          if (appended || usageChanged) {
+            running.usage = { ...usage };
+            try {
+              opts?.onUpdate?.({
+                name,
+                task,
+                summary: "",
+                transcriptPath,
+                exitCode: 0,
+                elapsed: Math.floor((Date.now() - startTime) / 1000),
+                transcript: [...transcript],
+                usage: { ...usage },
+              });
+            } catch {
+              // Defensive: never let an onUpdate throw kill the watcher.
+            }
+          }
+        } catch {
+          // Defensive: archive parse failures should not kill completion.
         }
       }
 
@@ -1236,6 +1372,8 @@ export async function watchSubagent(
         exitCode: result.exitCode,
         elapsed,
         transcriptPath,
+        transcript: [...transcript],
+        usage: { ...usage },
         ...(sessionId ? { claudeSessionId: sessionId } : {}),
       };
     }
@@ -2012,7 +2150,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         // Test seam: Task 7b (__test__.setWatchSubagentOverride).
         const watcher = watchSubagentOverride ?? watchSubagent;
-        watcher(running, watcherAbort.signal)
+        watcher(running, watcherAbort.signal, { tailStartLine: isPiResume ? entryCountBefore : 0 })
           .then((result) => {
             updateWidget();
             // Review-v1 #2: deregister the watcher controller now that this
@@ -2075,6 +2213,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: isPiResume ? params.sessionPath : undefined,
                   sessionId: isPiResume ? undefined : params.sessionId,
+                  transcript: result.transcript,
+                  usage: result.usage,
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },
@@ -2102,6 +2242,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                 exitCode: result.exitCode,
                 sessionKey,
                 error: result.error,
+                transcript: result.transcript,
+                usage: result.usage,
               });
             }
           })
