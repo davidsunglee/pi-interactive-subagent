@@ -27,8 +27,11 @@ function makeFakePi() {
 describe("subagent_resume preserves transcriptPath in registry.onResumeTerminal (review-v1 #3)", () => {
   let tools: any[];
   let scratch: string;
+  let previousDeniedTools: string | undefined;
 
   beforeEach(() => {
+    previousDeniedTools = process.env.PI_DENY_TOOLS;
+    delete process.env.PI_DENY_TOOLS;
     __test__.resetRegistry();
     const fake = makeFakePi();
     subagentsExtension(fake.api as any);
@@ -47,6 +50,8 @@ describe("subagent_resume preserves transcriptPath in registry.onResumeTerminal 
     __test__.setSurfaceOverrides(null);
     __test__.setWatchSubagentOverride(null);
     __test__.resetRegistry();
+    if (previousDeniedTools === undefined) delete process.env.PI_DENY_TOOLS;
+    else process.env.PI_DENY_TOOLS = previousDeniedTools;
     rmSync(scratch, { recursive: true, force: true });
   });
 

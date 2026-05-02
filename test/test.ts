@@ -88,6 +88,7 @@ async function withIsolatedAgentEnv(
   const root = createTestDir();
   const previousCwd = process.cwd();
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousDeniedTools = process.env.PI_DENY_TOOLS;
   const projectDir = join(root, "project");
   const projectAgentsDir = join(projectDir, ".pi", "agents");
   const globalDir = join(root, "global");
@@ -97,12 +98,14 @@ async function withIsolatedAgentEnv(
   mkdirSync(globalAgentsDir, { recursive: true });
   process.chdir(projectDir);
   process.env.PI_CODING_AGENT_DIR = globalDir;
+  delete process.env.PI_DENY_TOOLS;
 
   try {
     await fn({ projectDir, projectAgentsDir, globalDir, globalAgentsDir });
   } finally {
     process.chdir(previousCwd);
     restoreEnvVar("PI_CODING_AGENT_DIR", previousAgentDir);
+    restoreEnvVar("PI_DENY_TOOLS", previousDeniedTools);
     rmSync(root, { recursive: true, force: true });
   }
 }

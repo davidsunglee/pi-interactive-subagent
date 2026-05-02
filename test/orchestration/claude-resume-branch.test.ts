@@ -24,8 +24,11 @@ function makeFakePi() {
 
 describe("subagent_resume Claude sessionId branch (non-seamed construction)", () => {
   let tools: any[];
+  let previousDeniedTools: string | undefined;
 
   beforeEach(() => {
+    previousDeniedTools = process.env.PI_DENY_TOOLS;
+    delete process.env.PI_DENY_TOOLS;
     __test__.resetRegistry();
     const fake = makeFakePi();
     subagentsExtension(fake.api as any);
@@ -56,6 +59,8 @@ describe("subagent_resume Claude sessionId branch (non-seamed construction)", ()
     __test__.setSurfaceOverrides(null);
     __test__.setWatchSubagentOverride(null);
     __test__.resetRegistry();
+    if (previousDeniedTools === undefined) delete process.env.PI_DENY_TOOLS;
+    else process.env.PI_DENY_TOOLS = previousDeniedTools;
   });
 
   it("constructs a Claude-shaped RunningSubagent with cli='claude', a sentinelFile, and a --resume argv", async () => {

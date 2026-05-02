@@ -87,8 +87,11 @@ describe("subagent_resume tool boundary", () => {
   let strayPath: string;
   let fake: ReturnType<typeof makeFakePi>;
   let resumeTool: any;
+  let previousDeniedTools: string | undefined;
 
   beforeEach(() => {
+    previousDeniedTools = process.env.PI_DENY_TOOLS;
+    delete process.env.PI_DENY_TOOLS;
     scratchDir = mkdtempSync(join(tmpdir(), "resume-boundary-"));
     ownedPath = join(scratchDir, "owned.jsonl");
     strayPath = join(scratchDir, "stray.jsonl");
@@ -117,6 +120,8 @@ describe("subagent_resume tool boundary", () => {
     __test__.setSurfaceOverrides(null);
     __test__.setWatchSubagentOverride(null);
     __test__.resetRegistry();
+    if (previousDeniedTools === undefined) delete process.env.PI_DENY_TOOLS;
+    else process.env.PI_DENY_TOOLS = previousDeniedTools;
     rmSync(scratchDir, { recursive: true, force: true });
   });
 

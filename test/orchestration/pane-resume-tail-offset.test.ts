@@ -38,8 +38,11 @@ function makeSessionEntry(role: "user" | "assistant", text: string): string {
 describe("pane resume tail-offset wiring (Task 8)", () => {
   let fake: ReturnType<typeof makeFakePi>;
   let scratch: string;
+  let previousDeniedTools: string | undefined;
 
   beforeEach(() => {
+    previousDeniedTools = process.env.PI_DENY_TOOLS;
+    delete process.env.PI_DENY_TOOLS;
     __test__.resetRegistry();
     fake = makeFakePi();
     subagentsExtension(fake.api as any);
@@ -57,10 +60,12 @@ describe("pane resume tail-offset wiring (Task 8)", () => {
     __test__.setSurfaceOverrides(null);
     __test__.setWatchSubagentOverride(null);
     __test__.resetRegistry();
+    if (previousDeniedTools === undefined) delete process.env.PI_DENY_TOOLS;
+    else process.env.PI_DENY_TOOLS = previousDeniedTools;
     rmSync(scratch, { recursive: true, force: true });
   });
 
-  it("passes tailStartLine = pre-existing entry count to the watcher and forwards transcript/usage in subagent_result.details", async (t) => {
+  it("passes tailStartLine = pre-existing entry count to the watcher and forwards transcript/usage in subagent_result.details", async () => {
     // Create session file with 3 pre-existing entries.
     const sessionPath = join(scratch, "pi-session.jsonl");
     writeFileSync(
@@ -101,10 +106,7 @@ describe("pane resume tail-offset wiring (Task 8)", () => {
     registry.onTaskBlocked(orchId, 0, { sessionKey: sessionPath, message: "?" });
 
     const resume = fake.tools.find((tool) => tool.name === "subagent_resume");
-    if (!resume) {
-      t.skip("subagent_resume tool not registered in this nested subagent environment");
-      return;
-    }
+    assert.ok(resume, "subagent_resume tool must be registered");
 
     await resume.execute(
       "c-pi",

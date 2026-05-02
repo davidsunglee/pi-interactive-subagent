@@ -23,8 +23,11 @@ function makeFakePi() {
 
 describe("subagent_run_cancel reaches detached resume sessions (review-v1 #2)", () => {
   let tools: any[];
+  let previousDeniedTools: string | undefined;
 
   beforeEach(() => {
+    previousDeniedTools = process.env.PI_DENY_TOOLS;
+    delete process.env.PI_DENY_TOOLS;
     __test__.resetRegistry();
     const fake = makeFakePi();
     subagentsExtension(fake.api as any);
@@ -42,6 +45,8 @@ describe("subagent_run_cancel reaches detached resume sessions (review-v1 #2)", 
     __test__.setSurfaceOverrides(null);
     __test__.setWatchSubagentOverride(null);
     __test__.resetRegistry();
+    if (previousDeniedTools === undefined) delete process.env.PI_DENY_TOOLS;
+    else process.env.PI_DENY_TOOLS = previousDeniedTools;
   });
 
   it("cancelling an orchestration aborts the AbortSignal of an in-flight resume watcher", async () => {
