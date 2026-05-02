@@ -11,10 +11,6 @@ import {
   mkdirSync,
   copyFileSync,
   unlinkSync,
-  statSync,
-  openSync,
-  readSync,
-  closeSync,
 } from "node:fs";
 import {
   isMuxAvailable,
@@ -46,6 +42,7 @@ import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
 import { computePiTailResumeOffset, projectPiMessageToTranscript, tailPiSessionEntries } from "./backends/pi-projection.ts";
+import { tailJsonlLines, type JsonlTailState } from "./backends/jsonl-tail.ts";
 import { parseClaudeStreamEvent, parseClaudeResult } from "./backends/claude-stream.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
 import type { UsageStats, TranscriptMessage } from "./backends/types.ts";
@@ -1053,10 +1050,9 @@ export async function watchSubagent(
     contextTokens: 0,
     turns: 0,
   };
-  const piTailState = { offset: 0, pendingTail: "" };
+  const piTailState: JsonlTailState = { offset: 0, pendingTail: "" };
   let claudeTranscriptPathForTail: string | null = null;
-  let claudeFileOffset = 0;
-  let claudePendingTail = "";
+  const claudeTailState: JsonlTailState = { offset: 0, pendingTail: "" };
   let claudeFinalUsage: UsageStats | null = null;
 
   const applyClaudeUsage = (u: UsageStats): void => {
@@ -1152,22 +1148,14 @@ export async function watchSubagent(
           try {
             if (claudeTranscriptPathForTail === null) {
               claudeTranscriptPathForTail = readClaudeTranscriptPath();
-              claudeFileOffset = 0;
-              claudePendingTail = "";
+              claudeTailState.offset = 0;
+              claudeTailState.pendingTail = "";
+              claudeTailState.decoder = undefined;
             }
             const tp = claudeTranscriptPathForTail;
-            if (!tp || !existsSync(tp)) return;
-            const stat = statSync(tp);
-            if (stat.size <= claudeFileOffset) return;
-            const buf = Buffer.alloc(stat.size - claudeFileOffset);
-            const fd = openSync(tp, "r");
-            try {
-              readSync(fd, buf, 0, buf.length, claudeFileOffset);
-            } finally { closeSync(fd); }
-            claudeFileOffset = stat.size;
-            const chunk = claudePendingTail + buf.toString("utf8");
-            const lines = chunk.split("\n");
-            claudePendingTail = lines.pop() ?? "";
+            if (!tp) return;
+            const { lines } = tailJsonlLines(tp, claudeTailState);
+            if (lines.length === 0) return;
             let changed = false;
             for (const line of lines) {
               const trimmed = line.trim();

@@ -1,5 +1,5 @@
 import type { TranscriptContent, TranscriptMessage } from "./types.ts";
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { tailJsonlLines, type JsonlTailState } from "./jsonl-tail.ts";
 
 export type PiStreamMessage = {
   role: "user" | "assistant" | "toolResult";
@@ -24,10 +24,7 @@ export function projectPiMessageToTranscript(msg: PiStreamMessage): TranscriptMe
   return { role: msg.role, content };
 }
 
-export interface PiTailState {
-  offset: number;
-  pendingTail: string;
-}
+export type PiTailState = JsonlTailState;
 
 // Compute the byte offset that skips past `tailStartLine` lines of the given
 // session content. tailPiSessionEntries treats `state.offset` as a byte position
@@ -54,52 +51,7 @@ export interface PiTailDelta {
 // avoiding repeated whole-file reads on each pane-watch tick. Truncation is
 // detected via `stat.size < state.offset` and resets state to re-read from 0.
 export function tailPiSessionEntries(sessionFile: string, state: PiTailState): PiTailDelta {
-  if (!existsSync(sessionFile)) {
-    return { messages: [], assistantMessages: [] };
-  }
-
-  let size: number;
-  try {
-    size = statSync(sessionFile).size;
-  } catch {
-    return { messages: [], assistantMessages: [] };
-  }
-
-  if (size < state.offset) {
-    state.offset = 0;
-    state.pendingTail = "";
-  }
-
-  if (size === state.offset) {
-    return { messages: [], assistantMessages: [] };
-  }
-
-  const length = size - state.offset;
-  const buf = Buffer.alloc(length);
-  let fd: number;
-  try {
-    fd = openSync(sessionFile, "r");
-  } catch {
-    return { messages: [], assistantMessages: [] };
-  }
-  let bytesRead = 0;
-  let readFailed = false;
-  try {
-    bytesRead = readSync(fd, buf, 0, length, state.offset);
-  } catch {
-    readFailed = true;
-  } finally {
-    try { closeSync(fd); } catch {}
-  }
-  if (readFailed) {
-    return { messages: [], assistantMessages: [] };
-  }
-
-  const chunk = state.pendingTail + buf.subarray(0, bytesRead).toString("utf8");
-  state.offset += bytesRead;
-
-  const lines = chunk.split("\n");
-  state.pendingTail = lines.pop() ?? "";
+  const { lines } = tailJsonlLines(sessionFile, state);
 
   const messages: PiStreamMessage[] = [];
   const assistantMessages: PiStreamMessage[] = [];

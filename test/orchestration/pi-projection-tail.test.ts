@@ -50,6 +50,41 @@ describe("tailPiSessionEntries", () => {
     }
   });
 
+  it("torn-write multibyte: bytes split mid-UTF-8-sequence are buffered, not decoded as U+FFFD", () => {
+    // Reproduces the bug where buf.toString("utf8") on an incomplete trailing
+    // multibyte sequence (e.g., 2 of 4 bytes for 🌍) silently substitutes
+    // U+FFFD, corrupting the JSON and turning the line into a parse failure
+    // even after the remaining bytes arrive.
+    const dir = mkdtempSync(join(tmpdir(), "pi-tail-utf8-"));
+    const file = join(dir, "session.jsonl");
+    try {
+      const line = JSON.stringify({ type: "message", message: { role: "user", content: "hi 🌍 world" } }) + "\n";
+      const bytes = Buffer.from(line, "utf8");
+      // Find the position of the 4-byte 🌍 sequence and split in the middle of it.
+      const earthIdx = bytes.indexOf(0xf0); // first byte of 🌍 (U+1F30D)
+      assert.ok(earthIdx > 0, "expected 🌍 lead byte present");
+      const splitAt = earthIdx + 2; // mid-sequence: 2 of 4 bytes
+      writeFileSync(file, bytes.subarray(0, splitAt));
+
+      const state = { offset: 0, pendingTail: "" };
+      const r1 = tailPiSessionEntries(file, state);
+      assert.equal(r1.messages.length, 0, "incomplete multibyte must NOT yield a parsed message");
+      assert.ok(
+        !state.pendingTail.includes("�"),
+        "pendingTail must not contain U+FFFD replacement char from partial multibyte decode",
+      );
+
+      // Append the rest of the file. Decoder buffer must combine the 2 deferred
+      // bytes with the new bytes so 🌍 round-trips intact.
+      appendFileSync(file, bytes.subarray(splitAt));
+      const r2 = tailPiSessionEntries(file, state);
+      assert.equal(r2.messages.length, 1);
+      assert.equal(r2.messages[0].content, "hi 🌍 world");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it("malformed line skipped: bad JSON is skipped, valid line is returned", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-tail-"));
     const file = join(dir, "session.jsonl");
