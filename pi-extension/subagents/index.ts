@@ -45,7 +45,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { selectBackend } from "./backends/select.ts";
 import { makeHeadlessBackend } from "./backends/headless.ts";
-import { projectPiMessageToTranscript, tailPiSessionEntries } from "./backends/pi-projection.ts";
+import { computePiTailResumeOffset, projectPiMessageToTranscript, tailPiSessionEntries } from "./backends/pi-projection.ts";
 import { parseClaudeStreamEvent, parseClaudeResult } from "./backends/claude-stream.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
 import type { UsageStats, TranscriptMessage } from "./backends/types.ts";
@@ -1088,12 +1088,7 @@ export async function watchSubagent(
     try {
       if (existsSync(sessionFile)) {
         const raw = readFileSync(sessionFile, "utf8");
-        const lines = raw.split("\n");
-        let charsConsumed = 0;
-        for (let i = 0; i < Math.min(opts.tailStartLine, lines.length); i++) {
-          charsConsumed += lines[i].length + 1;
-        }
-        piTailState.offset = Math.min(charsConsumed, raw.length);
+        piTailState.offset = computePiTailResumeOffset(raw, opts.tailStartLine);
       }
     } catch {
       // Defensive: if seeking fails, fall back to offset 0 rather than failing.

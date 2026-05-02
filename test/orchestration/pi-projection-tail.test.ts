@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { tailPiSessionEntries } from "../../pi-extension/subagents/backends/pi-projection.ts";
+import { computePiTailResumeOffset, tailPiSessionEntries } from "../../pi-extension/subagents/backends/pi-projection.ts";
 import { mkdtempSync, writeFileSync, appendFileSync, truncateSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -136,5 +136,49 @@ describe("tailPiSessionEntries", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+describe("computePiTailResumeOffset", () => {
+  it("non-ASCII content: returns the UTF-8 byte position past N lines, not the UTF-16 character count", () => {
+    // Content where char-count ≠ byte-count. é = 2 bytes / 1 UTF-16 unit;
+    // 🌍 = 4 bytes / 2 UTF-16 units. The whole-file char and byte lengths must
+    // disagree, otherwise the test wouldn't pin the bug.
+    const line1 = JSON.stringify({ type: "message", message: { role: "user", content: "héllo 🌍" } }) + "\n";
+    const line2 = JSON.stringify({ type: "message", message: { role: "user", content: "résumé" } }) + "\n";
+    const line3 = JSON.stringify({ type: "message", message: { role: "user", content: "ascii-only" } }) + "\n";
+    const raw = line1 + line2 + line3;
+    assert.notEqual(raw.length, Buffer.byteLength(raw, "utf8"));
+
+    // Skip the first two non-ASCII lines.
+    const offset = computePiTailResumeOffset(raw, 2);
+    const expected = Buffer.byteLength(line1, "utf8") + Buffer.byteLength(line2, "utf8");
+    assert.equal(offset, expected);
+
+    // And feeding that offset to a real tailer must surface ONLY line3 — no
+    // garbage fragment, no skipped or re-emitted entry.
+    const dir = mkdtempSync(join(tmpdir(), "pi-tail-resume-"));
+    const file = join(dir, "session.jsonl");
+    try {
+      writeFileSync(file, raw);
+      const state = { offset, pendingTail: "" };
+      const delta = tailPiSessionEntries(file, state);
+      assert.equal(delta.messages.length, 1);
+      assert.equal(delta.messages[0].content, "ascii-only");
+      assert.equal(state.offset, Buffer.byteLength(raw, "utf8"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("clamps to file byte length when tailStartLine exceeds line count", () => {
+    const raw = `{"type":"message","message":{"role":"user","content":"é"}}\n`;
+    const offset = computePiTailResumeOffset(raw, 999);
+    assert.equal(offset, Buffer.byteLength(raw, "utf8"));
+  });
+
+  it("returns 0 for tailStartLine <= 0", () => {
+    assert.equal(computePiTailResumeOffset("anything\n", 0), 0);
+    assert.equal(computePiTailResumeOffset("anything\n", -5), 0);
   });
 });

@@ -29,6 +29,22 @@ export interface PiTailState {
   pendingTail: string;
 }
 
+// Compute the byte offset that skips past `tailStartLine` lines of the given
+// session content. tailPiSessionEntries treats `state.offset` as a byte position
+// passed to readSync, so a UTF-16 character count (e.g., from `string.length`)
+// would land mid-character for any non-ASCII content and either skip valid
+// entries or re-emit a partial line as garbage.
+export function computePiTailResumeOffset(raw: string, tailStartLine: number): number {
+  if (tailStartLine <= 0) return 0;
+  const lines = raw.split("\n");
+  const fileBytes = Buffer.byteLength(raw, "utf8");
+  let bytesConsumed = 0;
+  for (let i = 0; i < Math.min(tailStartLine, lines.length); i++) {
+    bytesConsumed += Buffer.byteLength(lines[i], "utf8") + 1;
+  }
+  return Math.min(bytesConsumed, fileBytes);
+}
+
 export interface PiTailDelta {
   messages: PiStreamMessage[];
   assistantMessages: PiStreamMessage[];
@@ -66,14 +82,17 @@ export function tailPiSessionEntries(sessionFile: string, state: PiTailState): P
   } catch {
     return { messages: [], assistantMessages: [] };
   }
-  let bytesRead: number;
+  let bytesRead = 0;
+  let readFailed = false;
   try {
     bytesRead = readSync(fd, buf, 0, length, state.offset);
   } catch {
-    try { closeSync(fd); } catch {}
-    return { messages: [], assistantMessages: [] };
+    readFailed = true;
   } finally {
     try { closeSync(fd); } catch {}
+  }
+  if (readFailed) {
+    return { messages: [], assistantMessages: [] };
   }
 
   const chunk = state.pendingTail + buf.subarray(0, bytesRead).toString("utf8");
