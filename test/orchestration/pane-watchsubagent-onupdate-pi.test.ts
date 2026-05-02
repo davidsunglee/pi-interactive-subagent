@@ -72,4 +72,44 @@ describe("watchSubagent pane pi onUpdate", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("starts tailing after pre-seeded parent history", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pane-pi-seeded-watch-"));
+    try {
+      const sessionFile = join(dir, "session.jsonl");
+      const seededParent = assistantLine("parent context");
+      const childOutput = assistantLine("child output");
+      writeFileSync(sessionFile, seededParent + childOutput);
+
+      const running: RunningSubagent = {
+        id: "pi-seeded-watch",
+        name: "PiSeededWatch",
+        task: "test",
+        backend: "pane",
+        surface: "fake-surface",
+        sessionFile,
+        piTailStartOffset: Buffer.byteLength(seededParent, "utf8"),
+        startTime: Date.now(),
+      };
+      const updates: any[] = [];
+
+      const exitTimer = setTimeout(() => {
+        try { writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" })); } catch {}
+      }, 1100);
+
+      const result = await watchSubagent(running, new AbortController().signal, {
+        onUpdate: (partial) => updates.push(partial),
+      });
+      clearTimeout(exitTimer);
+
+      assert.ok(updates.length >= 1, "expected at least one onUpdate partial");
+      assert.equal(result.transcript?.length, 1);
+      assert.deepEqual(result.transcript?.[0].content, [{ type: "text", text: "child output" }]);
+      assert.equal(result.usage?.turns, 1);
+      assert.equal(result.usage?.input, 100);
+      assert.equal(running.usage?.turns, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

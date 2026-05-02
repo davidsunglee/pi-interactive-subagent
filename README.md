@@ -12,8 +12,8 @@ Call `subagent()` and it **returns immediately**. The sub-agent runs in its own 
 
 ```
 ╭─ Subagents ──────────────────────── 2 running ─╮
-│ 00:23  Scout: Auth (scout)    8 msgs (5.1KB)   │
-│ 00:45  Scout: DB (scout)     12 msgs (9.3KB)   │
+│ 00:23  Scout: Auth (scout)    2 turns ↑1.2k ↓340 │
+│ 00:45  Scout: DB (scout)      running…          │
 ╰─────────────────────────────────────────────────╯
 ```
 

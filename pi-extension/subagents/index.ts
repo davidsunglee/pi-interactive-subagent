@@ -11,6 +11,7 @@ import {
   mkdirSync,
   copyFileSync,
   unlinkSync,
+  statSync,
 } from "node:fs";
 import {
   isMuxAvailable,
@@ -332,6 +333,8 @@ export interface RunningSubagent {
   surface?: string;
   /** Pane-only: path to the subagent's jsonl session file. Headless does not have one at launch time. */
   sessionFile?: string;
+  /** Pane Pi-only: byte offset after pre-seeded parent history; live tailing starts here. */
+  piTailStartOffset?: number;
   launchScriptFile?: string;
   entries?: number;
   bytes?: number;
@@ -805,6 +808,7 @@ export async function launchSubagent(
 
   // ── Pi CLI path ──
 
+  let piTailStartOffset = 0;
   if (spec.seededSessionMode) {
     seedSubagentSessionFile({
       mode: spec.seededSessionMode,
@@ -812,6 +816,11 @@ export async function launchSubagent(
       childSessionFile: spec.subagentSessionFile,
       childCwd: spec.effectiveCwd ?? ctx.cwd,
     });
+    try {
+      piTailStartOffset = statSync(spec.subagentSessionFile).size;
+    } catch {
+      piTailStartOffset = 0;
+    }
   }
 
   // Build pi command
@@ -911,6 +920,7 @@ export async function launchSubagent(
     surface,
     startTime,
     sessionFile: spec.subagentSessionFile,
+    piTailStartOffset,
     launchScriptFile,
     cli: "pi",
   };
@@ -1050,7 +1060,7 @@ export async function watchSubagent(
     contextTokens: 0,
     turns: 0,
   };
-  const piTailState: JsonlTailState = { offset: 0, pendingTail: "" };
+  const piTailState: JsonlTailState = { offset: running.piTailStartOffset ?? 0, pendingTail: "" };
   let claudeTranscriptPathForTail: string | null = null;
   const claudeTailState: JsonlTailState = { offset: 0, pendingTail: "" };
   let claudeFinalUsage: UsageStats | null = null;
