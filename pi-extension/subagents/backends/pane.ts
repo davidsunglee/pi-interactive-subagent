@@ -107,6 +107,26 @@ export function makePaneBackend(
       try {
         const sub = await watchSubagent(running, abort.signal, {
           onSessionKey: (key) => hooks?.onSessionKey?.(key),
+          onUpdate: (partial) => {
+            if (!onUpdate) return;
+            const partialSessionKey =
+              running.cli === "claude"
+                ? partial.claudeSessionId
+                : running.sessionFile;
+            onUpdate({
+              name: handle.name,
+              finalMessage: partial.summary ?? "",
+              transcriptPath: partial.transcriptPath ?? null,
+              exitCode: partial.exitCode ?? 0,
+              elapsedMs: (partial.elapsed ?? 0) * 1000,
+              sessionId: partial.claudeSessionId,
+              sessionKey: partialSessionKey,
+              error: partial.error,
+              ping: partial.ping,
+              transcript: partial.transcript,
+              usage: partial.usage,
+            });
+          },
         });
         // Review-v1 #1: For Claude, the resume-addressable key is the Claude
         // session id (the value the parent passes back via subagent_resume).
@@ -125,6 +145,8 @@ export function makePaneBackend(
           sessionKey: watchSessionKey,
           error: sub.error,
           ping: sub.ping,
+          transcript: sub.transcript,
+          usage: sub.usage,
         };
       } finally {
         if (signal && onToolAbort) signal.removeEventListener("abort", onToolAbort);
