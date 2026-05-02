@@ -260,12 +260,16 @@ describe("runParallel", () => {
     assert.equal(out.isError, true);
     assert.equal(out.results[0].name, "t1");
     assert.equal(out.results[0].error, "cancelled");
+    assert.equal(out.results[0].state, "cancelled", "in-flight task t1 aborted by signal must be state 'cancelled', not 'failed'");
     assert.equal(out.results[1].name, "t2");
     assert.equal(out.results[1].error, "cancelled");
+    assert.equal(out.results[1].state, "cancelled", "in-flight task t2 aborted by signal must be state 'cancelled', not 'failed'");
     assert.equal(out.results[2].name, "t3");
     assert.equal(out.results[2].error, "cancelled");
+    assert.equal(out.results[2].state, "cancelled");
     assert.equal(out.results[3].name, "t4");
     assert.equal(out.results[3].error, "cancelled");
+    assert.equal(out.results[3].state, "cancelled");
   });
 
   it("one task throwing does not cancel siblings; failing task appears at its input index", async () => {
@@ -398,6 +402,76 @@ describe("runParallel state + index annotation", () => {
     assert.equal(out.results[0].index, 0);
     assert.equal(out.results[1].state, "failed");
     assert.equal(out.results[1].index, 1);
+  });
+
+  it("in-flight tasks aborted by signal are annotated state: 'cancelled' (not 'failed') on results and onTerminal", async () => {
+    // Regression: terminal-annotation logic previously normalized any non-clean
+    // result to "failed", which mis-classified in-flight tasks killed by
+    // signal.abort() as failures. The contract requires those siblings to end
+    // in state "cancelled" with error "cancelled" — both in the returned
+    // results array and the onTerminal callback used by the registry.
+    const deps: LauncherDeps = {
+      async launch(task) {
+        return { id: task.name!, name: task.name!, startTime: Date.now() };
+      },
+      async waitForCompletion(handle, signal) {
+        return new Promise((resolve) => {
+          if (signal?.aborted) {
+            resolve({
+              name: handle.name,
+              finalMessage: "",
+              transcriptPath: null,
+              exitCode: 1,
+              elapsedMs: 1,
+              error: "cancelled",
+            });
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              resolve({
+                name: handle.name,
+                finalMessage: "",
+                transcriptPath: null,
+                exitCode: 1,
+                elapsedMs: 1,
+                error: "cancelled",
+              });
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const ac = new AbortController();
+    const terminalCalls: Array<{ index: number; state: string; error?: string }> = [];
+    const runPromise = runParallel(
+      [
+        { name: "live1", agent: "x", task: "t" },
+        { name: "live2", agent: "x", task: "t" },
+      ],
+      {
+        maxConcurrency: 2,
+        signal: ac.signal,
+        onTerminal: (i, r) => {
+          terminalCalls.push({ index: i, state: r.state, error: r.error });
+        },
+      },
+      deps,
+    );
+    await new Promise((r) => setImmediate(r));
+    ac.abort();
+    const out = await runPromise;
+    assert.equal(out.results[0].state, "cancelled");
+    assert.equal(out.results[0].error, "cancelled");
+    assert.equal(out.results[1].state, "cancelled");
+    assert.equal(out.results[1].error, "cancelled");
+    assert.equal(terminalCalls.length, 2);
+    for (const call of terminalCalls) {
+      assert.equal(call.state, "cancelled", `onTerminal[${call.index}] must report state 'cancelled', got '${call.state}'`);
+      assert.equal(call.error, "cancelled");
+    }
   });
 
   it("annotates pre-aborted tasks with state: 'cancelled'", async () => {

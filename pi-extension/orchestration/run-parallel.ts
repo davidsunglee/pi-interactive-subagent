@@ -165,7 +165,18 @@ export async function runParallel(
       }
 
       result.index = i;
-      result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
+      // When the run's abort signal is set, any in-flight task that did not
+      // complete cleanly is a cancellation, not a failure. Preserving this
+      // distinction matches the run-parallel contract (in-flight aborts end
+      // in state "cancelled") and keeps observers from misreporting siblings
+      // killed by signal.abort() as genuine task failures.
+      if (result.exitCode === 0 && !result.error) {
+        result.state = "completed";
+      } else if (opts.signal?.aborted) {
+        result.state = "cancelled";
+      } else {
+        result.state = "failed";
+      }
       results[i] = { ...results[i], ...result, index: i, name: result.name ?? results[i].name };
       emitInflight();
       opts.onTerminal?.(i, {
