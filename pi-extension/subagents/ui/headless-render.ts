@@ -189,17 +189,32 @@ export function renderRichSubagentResult(opts: RenderOpts): Component {
  * identifier or the original `task` text. Both are left undefined here; UI
  * callers that have access to the originating `OrchestrationTask[]` can
  * populate them by post-processing the rows.
+ *
+ * Handles sparse arrays by iterating every index from 0 to length-1,
+ * producing a concrete entry for each (including placeholders for undefined slots).
  */
 export function toTaskRows(results: OrchestratedTaskResult[]): TaskRow[] {
-  return results.map((r) => ({
-    name: r.name,
-    agent: undefined,
-    state: r.state ?? "pending",
-    finalMessage: r.finalMessage,
-    transcript: r.transcript,
-    usage: r.usage,
-    task: undefined,
-    error: r.error,
-    index: r.index,
-  }));
+  return Array.from({ length: results.length }, (_, i) => {
+    const r = results[i];
+    if (r === undefined) {
+      return {
+        name: `task-${i + 1}`,
+        agent: undefined,
+        state: "pending",
+        task: undefined,
+        index: i,
+      };
+    }
+    return {
+      name: r.name,
+      agent: undefined,
+      state: r.state ?? "pending",
+      finalMessage: r.finalMessage,
+      transcript: r.transcript,
+      usage: r.usage,
+      task: undefined,
+      error: r.error,
+      index: r.index,
+    };
+  });
 }

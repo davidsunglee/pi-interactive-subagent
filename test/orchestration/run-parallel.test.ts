@@ -363,9 +363,10 @@ describe("runParallel onBlocked worker scheduling", () => {
     );
     assert.deepEqual(blocked, [0], "task 0 should have reported blocked");
     assert.ok(launched.includes("t1"), `t1 should have been launched after t0 blocked, launches=${launched.join(",")}`);
-    // Blocked slot is registry-owned so results[0] is left undefined; t1
-    // completed so results[1] must be present and completed.
-    assert.equal(out.results[0], undefined);
+    // Blocked slot is registry-owned; results[0] stays at state "running" (never
+    // terminal) so the registry can later resolve it. t1 completed normally.
+    assert.ok(out.results[0], "blocked slot should be populated (not undefined)");
+    assert.equal(out.results[0].state, "running", "blocked slot should stay running in results");
     assert.ok(out.results[1]);
     assert.equal(out.results[1].state, "completed");
   });

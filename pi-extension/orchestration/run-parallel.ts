@@ -23,8 +23,8 @@ export interface RunParallelOpts {
    * Tool-framework onUpdate callback. When set, per-task partial snapshots
    * are wrapped in the tool-framework `{ content, details }` shape and
    * forwarded. The details payload carries the full in-flight results
-   * array (input-indexed, with `undefined` slots for unstarted tasks) so
-   * the UI can render a live-updating grid.
+   * array (input-indexed, dense — pending/running/terminal state on every slot)
+   * so the UI can render a live-updating grid.
    */
   onUpdate?: (content: {
     content: { type: "text"; text: string }[];
@@ -47,9 +47,8 @@ export interface RunParallelOpts {
   onSessionKey?: (taskIndex: number, sessionKey: string) => void;
   /**
    * Async-mode hook: when set, a ping-carrying step is routed here instead of
-   * terminalized. The worker returns without filling results[i] — the registry
-   * owns that slot. In async mode, undefined results slots are left alone
-   * (the post-loop sweep skips them when onBlocked is set).
+   * terminalized. The results[i] slot stays at state "running" — the registry
+   * owns lifecycle of blocked slots and the abort sweep leaves them untouched.
    */
   onBlocked?: (taskIndex: number, payload: { sessionKey: string; message: string; partial: OrchestratedTaskResult }) => void;
 }
@@ -75,8 +74,27 @@ export async function runParallel(
   }
 
   const results: OrchestrationResult[] = new Array(tasks.length);
+  for (let i = 0; i < tasks.length; i++) {
+    results[i] = {
+      name: tasks[i].name ?? `task-${i + 1}`,
+      index: i,
+      state: "pending",
+      finalMessage: "",
+      transcriptPath: null,
+      exitCode: 0,
+      elapsedMs: 0,
+    };
+  }
   let nextIdx = 0;
   let isError = false;
+
+  function emitInflight(): void {
+    if (!opts.onUpdate) return;
+    opts.onUpdate({
+      content: [{ type: "text", text: summarizeInflightParallel(results) }],
+      details: { results: results.map((r) => ({ ...r })), isError: false, inflight: true },
+    });
+  }
 
   async function worker(): Promise<void> {
     for (;;) {
@@ -96,19 +114,15 @@ export async function runParallel(
       let result: OrchestrationResult;
       const stepOnUpdate = opts.onUpdate
         ? (partial: OrchestrationResult) => {
-            const inflight = results.slice();
-            inflight[i] = partial;
-            opts.onUpdate!({
-              content: [
-                { type: "text", text: summarizeInflightParallel(inflight) },
-              ],
-              details: { results: inflight, isError: false, inflight: true },
-            });
+            results[i] = { ...results[i], ...partial, state: "running", index: i };
+            emitInflight();
           }
         : undefined;
       try {
         const handle = await deps.launch(task, false /* defaultFocus */, opts.signal);
         opts.onLaunched?.(i, { sessionKey: handle.sessionKey });
+        results[i] = { ...results[i], state: "running", ...(handle.sessionKey ? { sessionKey: handle.sessionKey } : {}) };
+        emitInflight();
         result = await deps.waitForCompletion(handle, opts.signal, stepOnUpdate, {
           onSessionKey: (sessionKey) => opts.onSessionKey?.(i, sessionKey),
         });
@@ -140,12 +154,9 @@ export async function runParallel(
               transcript: result.transcript,
             },
           });
-          // Leave results[i] undefined — registry owns this slot. The worker
-          // MUST continue claiming later pending siblings so that maxConcurrency
-          // exhaustion by a block does not strand them (review-v3 #1): with
-          // maxConcurrency=1 the only worker would exit, runParallel would
-          // finish, and the caller's post-run sweep would wrongly cancel the
-          // untouched tail.
+          // results[i] stays "running" — registry owns lifecycle of this slot.
+          // The worker MUST continue claiming later pending siblings so that
+          // maxConcurrency exhaustion by a block does not strand them (review-v3 #1).
           continue;
         }
         // Sync path: fold ping.message into finalMessage and mark as completed.
@@ -155,7 +166,8 @@ export async function runParallel(
 
       result.index = i;
       result.state = result.exitCode === 0 && !result.error ? "completed" : "failed";
-      results[i] = result;
+      results[i] = { ...results[i], ...result, index: i, name: result.name ?? results[i].name };
+      emitInflight();
       opts.onTerminal?.(i, {
         name: result.name,
         index: i,
@@ -180,34 +192,32 @@ export async function runParallel(
 
   if (opts.signal?.aborted) {
     for (let i = 0; i < tasks.length; i++) {
-      if (!results[i]) {
-        // In async mode (onBlocked set), undefined slots are registry-owned
-        // blocked slots. Leave them alone — the registry handles their cleanup.
-        if (opts.onBlocked) continue;
-        const raw = tasks[i];
-        const cancelledResult: OrchestrationResult = {
-          name: raw.name ?? `task-${i + 1}`,
-          index: i,
-          finalMessage: "",
-          transcriptPath: null,
-          exitCode: 1,
-          elapsedMs: 0,
-          error: "cancelled",
-          state: "cancelled",
-        };
-        results[i] = cancelledResult;
-        opts.onTerminal?.(i, {
-          name: cancelledResult.name,
-          index: i,
-          state: "cancelled",
-          finalMessage: cancelledResult.finalMessage,
-          transcriptPath: cancelledResult.transcriptPath,
-          elapsedMs: cancelledResult.elapsedMs,
-          exitCode: cancelledResult.exitCode,
-          error: cancelledResult.error,
-        });
-        isError = true;
-      }
+      if (results[i].state !== "pending") continue;
+      // In async mode (onBlocked set), registry retains lifecycle ownership of
+      // registered blocked slots. Pending slots here are truly unstarted.
+      if (opts.onBlocked) continue;
+      const cancelledResult: OrchestrationResult = {
+        ...results[i],
+        state: "cancelled",
+        finalMessage: "",
+        transcriptPath: null,
+        exitCode: 1,
+        elapsedMs: 0,
+        error: "cancelled",
+        index: i,
+      };
+      results[i] = cancelledResult;
+      opts.onTerminal?.(i, {
+        name: cancelledResult.name,
+        index: i,
+        state: "cancelled",
+        finalMessage: cancelledResult.finalMessage,
+        transcriptPath: cancelledResult.transcriptPath,
+        elapsedMs: cancelledResult.elapsedMs,
+        exitCode: cancelledResult.exitCode,
+        error: cancelledResult.error,
+      });
+      isError = true;
     }
   }
 
@@ -218,7 +228,7 @@ function summarizeInflightParallel(
   results: (OrchestrationResult | undefined)[],
 ): string {
   const total = results.length;
-  const done = results.filter((r) => r !== undefined).length;
+  const done = results.filter((r) => r && (r.state === "completed" || r.state === "failed" || r.state === "cancelled")).length;
   const lines = [`parallel orchestration (in-flight): ${done}/${total} task(s)`];
   for (let i = 0; i < results.length; i++) {
     const r = results[i];

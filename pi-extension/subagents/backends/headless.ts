@@ -514,6 +514,7 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
   const { spec, startTime, abort, ctx, emitPartial: emit } = p;
   const transcript: TranscriptMessage[] = [];
   let usage: UsageStats = emptyUsage();
+  let hasRealUsage = false;
   let stderr = "";
   let terminalResult: ReturnType<typeof parseClaudeResult> | null = null;
   let sessionId: string | undefined;
@@ -569,6 +570,7 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
       if (event.type === "result") {
         terminalResult = parseClaudeResult(event);
         usage = terminalResult.usage;
+        hasRealUsage = true;
         // Terminal result event — emit a snapshot reflecting final usage and
         // final message. The `close` handler will still emit the ultimate
         // resolved BackendResult; this gives watchers a usage-complete partial
@@ -580,7 +582,7 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
           exitCode: 0,
           elapsedMs: Date.now() - startTime,
           sessionId,
-          usage,
+          ...(hasRealUsage ? { usage } : {}),
           transcript,
         });
       } else {
@@ -592,6 +594,8 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
             if (m.role === "assistant") sawAssistant = true;
           }
           if (sawAssistant) {
+            usage.turns += 1;
+            hasRealUsage = true;
             // Emit a partial on assistant events (not on every tool-result
             // fragment or user message, which would spam).
             emit({
@@ -601,7 +605,7 @@ async function runClaudeHeadless(p: RunParams): Promise<BackendResult> {
               exitCode: 0,
               elapsedMs: Date.now() - startTime,
               sessionId,
-              usage,
+              ...(hasRealUsage ? { usage: { ...usage } } : {}),
               transcript,
             });
           }

@@ -109,7 +109,8 @@ export async function runSerial(
     // can render a live-updating aggregate view.
     const stepOnUpdate = opts.onUpdate
       ? (partial: OrchestrationResult) => {
-          const inflight = [...results, partial];
+          const liveStep: OrchestrationResult = { ...partial, state: "running", index: i };
+          const inflight = [...results, liveStep];
           opts.onUpdate!({
             content: [
               { type: "text", text: summarizeInflight("serial", inflight) },
