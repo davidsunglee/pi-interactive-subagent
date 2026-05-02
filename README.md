@@ -88,10 +88,10 @@ PI_SUBAGENT_MODE=auto      # default — detect mux, fall back to headless
 | `elapsedMs`      | both                   | Wall time from launch to completion.                                  |
 | `sessionKey`     | both                   | Resume-addressable identifier. For pi children this is the subagent session file path (accepted directly by `subagent_resume({ sessionPath })`); for Claude children this is the Claude session id (accepted directly by `subagent_resume({ sessionId })`). Always populated on successful terminal results; undefined while a task is `pending`. |
 | `error`          | both                   | Non-empty when the run didn't cleanly finish.                         |
-| `usage`          | **headless only (v1)** | `{ input, output, cacheRead, cacheWrite, cost, contextTokens, turns }` |
-| `transcript`     | **headless only (v1)** | Parsed array of `TranscriptMessage { role, content[] }`. Content block types: `"text" \| "thinking" \| "toolCall" \| "image"`. Rich provider metadata (stopReason, per-message timestamp/cost) is **not** surfaced here — read the archived `.jsonl` at `transcriptPath` for the full stream. |
+| `usage`          | both                   | `{ input, output, cacheRead, cacheWrite, cost, contextTokens, turns }` |
+| `transcript`     | both                   | Parsed array of `TranscriptMessage { role, content[] }`. Content block types: `"text" \| "thinking" \| "toolCall" \| "image"`. Rich provider metadata (stopReason, per-message timestamp/cost) is **not** surfaced here — read the archived `.jsonl` at `transcriptPath` for the full stream. |
 
-The `usage` / `transcript` fields are `undefined` on pane-backend results in v1; enriching the pane path is tracked as follow-up work.
+Both backends populate `usage` / `transcript`. Caveats on the pane path: ~1s latency floor on partials (1Hz polling matches the widget repaint cadence); long-running sessions accumulate unbounded `transcript[]` entries (same v1-acceptable limitation as headless); Claude pane sessions started via `--resume` may fall back to post-mortem-only because Claude Code does not always re-fire the `SessionStart` hook on resume — the resolved result still carries the full archived transcript and usage in that case.
 
 ## Tool restriction
 
