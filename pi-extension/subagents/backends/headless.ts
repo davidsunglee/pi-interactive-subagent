@@ -20,10 +20,11 @@ import type {
   BackendResult,
   BackendWatchHooks,
   LaunchedHandle,
-  TranscriptContent,
   TranscriptMessage,
   UsageStats,
 } from "./types.ts";
+import { projectPiMessageToTranscript, type PiStreamMessage } from "./pi-projection.ts";
+export { projectPiMessageToTranscript, type PiStreamMessage } from "./pi-projection.ts";
 
 interface HeadlessLaunch {
   id: string;
@@ -282,28 +283,6 @@ function makeAbortHandler(proc: ChildProcess, isExited: () => boolean): () => vo
   };
 }
 
-type PiStreamMessage = {
-  role: "user" | "assistant" | "toolResult";
-  content: unknown;  // normalized to TranscriptContent[] by projectPiMessageToTranscript
-};
-
-export function projectPiMessageToTranscript(msg: PiStreamMessage): TranscriptMessage {
-  const rawContent: unknown = msg.content;
-  const content: TranscriptContent[] = typeof rawContent === "string"
-    ? [{ type: "text", text: rawContent }]
-    : (rawContent as TranscriptContent[]);
-  if (msg.role === "toolResult") {
-    const tr = msg as any;
-    return {
-      role: "toolResult",
-      content,
-      toolCallId: tr.toolCallId,
-      toolName: tr.toolName,
-      isError: tr.isError,
-    };
-  }
-  return { role: msg.role, content };
-}
 
 async function runPiHeadless(p: RunParams): Promise<BackendResult> {
   const { spec, startTime, abort, ctx, emitPartial: emit } = p;

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { projectPiMessageToTranscript } from "../../pi-extension/subagents/backends/headless.ts";
+import { projectPiMessageToTranscript } from "../../pi-extension/subagents/backends/pi-projection.ts";
 
 describe("projectPiMessageToTranscript", () => {
   it("normalizes a pi UserMessage with content: string into a TextContent block array", () => {
