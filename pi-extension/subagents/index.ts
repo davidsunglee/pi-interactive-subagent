@@ -100,7 +100,27 @@ type ResumeToolParams = {
   sessionId?: string;
   name?: string;
   message?: string;
+  autoExit?: boolean;
 };
+
+/**
+ * Compute auto-exit / interactive flags for a resumed subagent.
+ *
+ * Ported from upstream commit 4fe6754 (PR #40). The default is `autoExit: true`
+ * so resumed autonomous follow-ups close after their next normal completion;
+ * callers wanting an interactive handoff opt in with `autoExit: false`.
+ *
+ * Note: `interactive` is returned for parity with upstream and for use by
+ * future status-supervision work (TODO-8c06b75d). It is not yet consumed by
+ * the local `RunningSubagent` shape.
+ */
+export function resolveResumeLaunchBehavior(params: { autoExit?: boolean }): {
+  autoExit: boolean;
+  interactive: boolean;
+} {
+  const autoExit = params.autoExit ?? true;
+  return { autoExit, interactive: !autoExit };
+}
 
 // Survive /reload: clear timers and abort poll loops from the previous module load.
 // /reload re-imports this file, giving fresh module-level state, but closures from
@@ -537,6 +557,7 @@ export const __test__ = {
   discoverAgentDefinitions,
   resolveEffectiveSessionMode,
   resolveLaunchBehavior,
+  resolveResumeLaunchBehavior,
   buildPiPromptArgs,
   // Task 7b additions:
   setLauncherDepsOverride(deps: LauncherDeps | null) { launcherDepsOverride = deps; },
@@ -1973,6 +1994,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         })),
         name: Type.Optional(Type.String({ description: "Display name. Default: 'Resume'" })),
         message: Type.Optional(Type.String({ description: "Follow-up prompt to deliver." })),
+        autoExit: Type.Optional(
+          Type.Boolean({
+            description:
+              "Whether the resumed session should automatically exit after completing its response. " +
+              "Defaults to true for autonomous follow-up work; set false for interactive resumed sessions.",
+          }),
+        ),
       }),
 
       renderCall(args, theme) {
@@ -2005,6 +2033,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
       async execute(_toolCallId: string, params: ResumeToolParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
         const name = params.name ?? "Resume";
+        const { autoExit: resumeAutoExit } = resolveResumeLaunchBehavior(params);
         const startTime = Date.now();
 
         // 1. XOR validation — must precede mux gate and existsSync gate.
@@ -2074,6 +2103,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           const resumeEnvParts: string[] = [];
           if (process.env.PI_CODING_AGENT_DIR) {
             resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
+          }
+          // Upstream PR #40: auto-exit the resumed session after its next
+          // normal completion. The pi-loaded `subagent-done` extension reads
+          // PI_SUBAGENT_AUTO_EXIT=1 to enable the auto-exit lifecycle. Skip it
+          // when the caller opts into an interactive handoff (autoExit:false).
+          if (resumeAutoExit) {
+            resumeEnvParts.push(`PI_SUBAGENT_AUTO_EXIT=1`);
           }
           const resumeEnvPrefix = resumeEnvParts.length > 0 ? resumeEnvParts.join(" ") + " " : "";
           command = `${resumeEnvPrefix}${parts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;

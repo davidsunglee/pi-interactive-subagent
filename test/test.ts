@@ -616,17 +616,66 @@ describe("subagent-done.ts", () => {
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
     });
 
-    it("stays open after user takeover for that cycle", () => {
+    it("auto-exits after normal completion even when the user sent the prompt", () => {
+      // Upstream commit 2105cf4 (PR #42): a user-driven follow-up that runs
+      // to a normal stop must still trigger auto-exit. The previous behavior
+      // stranded the pane open after manual takeover.
       const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(true, messages), false);
+      assert.equal(shouldAutoExitOnAgentEnd(true, messages), true);
     });
 
     it("stays open after Escape aborts the run", () => {
-      const messages = [{ role: "assistant", stopReason: "aborted" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
+      // Abort still leaves the session inspectable / follow-up-able regardless
+      // of who started the turn — preserved across the upstream port.
+      const messagesNoTakeover = [{ role: "assistant", stopReason: "aborted" }];
+      assert.equal(shouldAutoExitOnAgentEnd(false, messagesNoTakeover), false);
+      const messagesWithTakeover = [{ role: "assistant", stopReason: "aborted" }];
+      assert.equal(shouldAutoExitOnAgentEnd(true, messagesWithTakeover), false);
     });
   });
 });
+describe("resolveResumeLaunchBehavior", () => {
+  // Regression coverage for upstream commit 4fe6754 (PR #40):
+  // resumed pi subagents must default to auto-exit so follow-up work shuts
+  // the pane down after a normal completion.
+  it("defaults resumed subagents to auto-exit and non-interactive tracking", () => {
+    const testApi = (subagentsModule as any).__test__;
+    assert.equal(typeof testApi.resolveResumeLaunchBehavior, "function");
+
+    assert.deepEqual(testApi.resolveResumeLaunchBehavior({}), {
+      autoExit: true,
+      interactive: false,
+    });
+    assert.deepEqual(testApi.resolveResumeLaunchBehavior({ autoExit: false }), {
+      autoExit: false,
+      interactive: true,
+    });
+    assert.deepEqual(testApi.resolveResumeLaunchBehavior({ autoExit: true }), {
+      autoExit: true,
+      interactive: false,
+    });
+  });
+
+  it("registers subagent_resume with an autoExit override", () => {
+    const previousDeniedTools = process.env.PI_DENY_TOOLS;
+    delete process.env.PI_DENY_TOOLS;
+    try {
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+
+      const resumeTool = registeredTools.find((tool) => tool.name === "subagent_resume");
+      assert.ok(resumeTool, "expected subagent_resume tool to be registered");
+
+      const autoExitSchema = resumeTool.parameters.properties.autoExit;
+      assert.ok(autoExitSchema, "autoExit parameter must be present");
+      assert.equal(autoExitSchema.type, "boolean");
+      assert.match(autoExitSchema.description, /Defaults to true/);
+    } finally {
+      restoreEnvVar("PI_DENY_TOOLS", previousDeniedTools);
+    }
+  });
+});
+
 describe("subagent startup delay", () => {
   it("defaults to 500ms when no env var is set", () => {
     const testApi = (subagentsModule as any).__test__;

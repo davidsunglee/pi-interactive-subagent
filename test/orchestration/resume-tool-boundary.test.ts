@@ -271,6 +271,89 @@ describe("subagent_resume tool boundary", () => {
     assert.match(pingMsg.message.content, /need more info/);
   });
 
+  it("sessionPath: defaults to auto-exit and propagates PI_SUBAGENT_AUTO_EXIT=1 in resume env", async () => {
+    // Regression for upstream commit 4fe6754 (PR #40): a resumed pi-backed
+    // subagent should default to auto-exit so the follow-up turn closes the
+    // pane after normal completion. The auto-exit lifecycle is enabled in
+    // the child by setting PI_SUBAGENT_AUTO_EXIT=1 on the resume command.
+    __test__.setWatchSubagentOverride(async (_running: any, _signal: any) => makeTerminalResult());
+
+    const ctx = makeCtx(scratchDir);
+    const result = await resumeTool.execute(
+      "tc-auto-exit-default",
+      { sessionPath: strayPath, name: "Auto Exit Default" },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
+    assert.equal(result.details?.status, "started");
+
+    const command = __test__.getLastLaunchCommand();
+    assert.ok(command, "resume tool should record its last launch command");
+    assert.match(
+      command!,
+      /PI_SUBAGENT_AUTO_EXIT=1/,
+      "default resume must enable auto-exit via PI_SUBAGENT_AUTO_EXIT=1",
+    );
+
+    // Drain the fire-and-forget watcher.
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it("sessionPath + autoExit:false: omits PI_SUBAGENT_AUTO_EXIT so interactive resumes stay open", async () => {
+    // Interactive handoff regression: callers that explicitly opt out of
+    // auto-exit must NOT have the env var set, otherwise the resumed pane
+    // would auto-close after the first normal completion.
+    __test__.setWatchSubagentOverride(async (_running: any, _signal: any) => makeTerminalResult());
+
+    const ctx = makeCtx(scratchDir);
+    const result = await resumeTool.execute(
+      "tc-auto-exit-off",
+      { sessionPath: strayPath, name: "Interactive Resume", autoExit: false },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
+    assert.equal(result.details?.status, "started");
+
+    const command = __test__.getLastLaunchCommand();
+    assert.ok(command, "resume tool should record its last launch command");
+    assert.doesNotMatch(
+      command!,
+      /PI_SUBAGENT_AUTO_EXIT/,
+      "autoExit:false resume must not set PI_SUBAGENT_AUTO_EXIT",
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it("sessionId (Claude) resume: never sets PI_SUBAGENT_AUTO_EXIT — pi-only env var", async () => {
+    // PI_SUBAGENT_AUTO_EXIT is consumed by the pi-loaded subagent-done
+    // extension. The Claude resume branch builds a `claude` command and must
+    // not leak the pi env var into Claude's argv.
+    const claudeId = "claude-resume-no-auto-exit";
+    __test__.setWatchSubagentOverride(async (_running: any, _signal: any) => makeTerminalResult());
+
+    const ctx = makeCtx(scratchDir);
+    await resumeTool.execute(
+      "tc-claude-no-auto-exit",
+      { sessionId: claudeId, name: "Claude Resume" },
+      new AbortController().signal,
+      () => {},
+      ctx,
+    );
+
+    const command = __test__.getLastLaunchCommand();
+    assert.ok(command, "resume tool should record its last launch command");
+    assert.doesNotMatch(
+      command!,
+      /PI_SUBAGENT_AUTO_EXIT/,
+      "Claude resume branch must not include the pi-only auto-exit env var",
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
   it("unowned sessionPath + empty file → handler succeeds; registry unchanged", async () => {
     // strayPath exists but is NOT registered in the registry.
     const registry = __test__.getRegistry();

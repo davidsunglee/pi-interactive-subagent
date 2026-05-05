@@ -15,11 +15,12 @@ export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
 }
 
 export function shouldAutoExitOnAgentEnd(
-  userTookOver: boolean,
+  _userTookOver: boolean,
   messages: any[] | undefined,
 ): boolean {
-  if (userTookOver) return false;
-
+  // Manual input should not strand an auto-exit subagent. If the latest agent
+  // turn completed normally, close the session. Escape/abort still leaves it
+  // open for inspection or another prompt.
   if (messages) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
@@ -106,10 +107,9 @@ export default function (pi: ExtensionAPI) {
     renderWidget(ctx, null);
   });
 
-  // Auto-exit: when the agent loop ends, shut down automatically.
-  // If the user interrupts (Escape) or sends any input, auto-exit is disabled
-  // for that cycle — the user wants to steer. Once they're done and the agent
-  // completes normally again, auto-exit re-engages.
+  // Auto-exit: when the agent loop ends, shut down automatically after normal
+  // completion, including user-driven follow-up turns. Escape/abort still keeps
+  // the session open for inspection or another prompt.
   // Enabled via `auto-exit: true` in agent frontmatter.
   if (autoExit) {
     let userTookOver = false;
@@ -130,13 +130,14 @@ export default function (pi: ExtensionAPI) {
       const messages = (event as any).messages as any[] | undefined;
       const shouldExit = shouldAutoExitOnAgentEnd(userTookOver, messages);
       if (!shouldExit) {
-        // User sent input after the agent had started, or the run was interrupted
-        // with Escape. Reset takeover so auto-exit can re-engage on the next
-        // normal completion cycle.
+        // Reset any recorded manual input marker. Auto-exit is decided by
+        // whether the latest agent turn completed normally, not by who
+        // initiated it. Escape/abort keeps the session open for inspection.
         userTookOver = false;
         return;
       }
-
+      // Reset before shutdown so any future cycles (e.g. on resume) start clean.
+      userTookOver = false;
       ctx.shutdown();
     });
   }
