@@ -12,16 +12,16 @@ Call `subagent()` and it **returns immediately**. The sub-agent runs in its own 
 
 ```
 ╭─ Subagents ──────────────────────── 2 running ─╮
-│ 00:23  Scout: Auth (scout)    2 turns ↑1.2k ↓340 │
-│ 00:45  Scout: DB (scout)      running…          │
+│ 00:23  Auth scan (lookup)     2 turns ↑1.2k ↓340 │
+│ 00:45  DB scan (lookup)       running…           │
 ╰─────────────────────────────────────────────────╯
 ```
 
 For parallel execution, just call `subagent` multiple times — they all run concurrently:
 
 ```typescript
-subagent({ name: "Scout: Auth", agent: "scout", task: "Analyze auth module" });
-subagent({ name: "Scout: DB", agent: "scout", task: "Map database schema" });
+subagent({ name: "Auth scan", agent: "lookup", task: "Analyze auth module" });
+subagent({ name: "DB scan", agent: "lookup", task: "Map database schema" });
 // Both return immediately, results steer back independently
 ```
 
@@ -109,13 +109,13 @@ Example minimal coordinator frontmatter:
 ```yaml
 ---
 name: plan-refiner
-description: Refines a plan by dispatching focused worker subagents
+description: Refines a plan by dispatching focused subagents
 cli: pi
 tools: read, bash, subagent_run_serial
 ---
 ```
 
-An agent declaring **both** `spawning: false` **and** any orchestration tool in `tools:` is rejected at launch with an error naming the conflicting token. Pick one: either omit `spawning: false` so the coordinator can dispatch children, or remove the orchestration token(s) from `tools:` and keep the worker-style restriction.
+An agent declaring **both** `spawning: false` **and** any orchestration tool in `tools:` is rejected at launch with an error naming the conflicting token. Pick one: either omit `spawning: false` so the coordinator can dispatch children, or remove the orchestration token(s) from `tools:` and keep the spawning-disabled restriction.
 
 ## Skills
 
@@ -128,7 +128,7 @@ Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task)
 
 ### Extensions
 
-**Subagents** — 6 tools + 3 commands:
+**Subagents** — 6 tools + 1 command:
 
 | Tool                    | Description                                                                               |
 | ----------------------- | ----------------------------------------------------------------------------------------- |
@@ -139,23 +139,13 @@ Agents declaring `skills:` frontmatter (or passing `skills:` in a subagent task)
 | `subagent_run_parallel` | Fan out a batch of subagents concurrently (blocks; default cap 4, hard cap 8; `wait: false` for async — tasks may enter `blocked` state when child calls `caller_ping`) |
 | `subagent_run_cancel`   | Cancel an async orchestration by id (idempotent on already-terminal runs).                |
 
-| Command                    | Description                          |
-| -------------------------- | ------------------------------------ |
-| `/plan`                    | Start a full planning workflow       |
-| `/iterate`                 | Fork into a subagent for quick fixes |
-| `/subagent <agent> <task>` | Spawn a named agent directly         |
+| Command                    | Description                  |
+| -------------------------- | ---------------------------- |
+| `/subagent <agent> <task>` | Spawn a named agent directly |
 
-### Bundled Agents
+### Agents
 
-| Agent             | Model                  | Role                                                                                     |
-| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
-| **planner**       | Opus (medium thinking) | Brainstorming — clarifies requirements, explores approaches, writes plans, creates todos |
-| **scout**         | Haiku                  | Fast codebase reconnaissance — maps files, patterns, conventions                         |
-| **worker**        | Sonnet                 | Implements tasks from todos — writes code, runs tests, makes polished commits            |
-| **reviewer**      | Opus (medium thinking) | Reviews code for bugs, security issues, correctness                                      |
-| **visual-tester** | Sonnet                 | Visual QA via Chrome CDP — screenshots, responsive testing, interaction testing          |
-
-Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global** (`~/.pi/agent/agents/`) > **package-bundled**. Override any bundled agent by placing your own version in the higher-priority location.
+No agent definitions ship with this fork. Define your own and place them in `.pi/agents/` (project-local) or `~/.pi/agent/agents/` (global). Agent discovery follows priority: **project-local** > **global** > **package-bundled** (empty in this fork).
 
 ---
 
@@ -173,9 +163,9 @@ Multiple subagents run concurrently — each steers its result back independentl
 
 ```
 ╭─ Subagents ──────────────────────── 3 running ─╮
-│ 01:23  Scout: Auth (scout)      15 msgs (12KB) │
+│ 01:23  Auth scan (lookup)       15 msgs (12KB) │
 │ 00:45  Researcher (researcher)   8 msgs (6KB)  │
-│ 00:12  Scout: DB (scout)             starting…  │
+│ 00:12  DB scan (lookup)              starting…  │
 ╰─────────────────────────────────────────────────╯
 ```
 
@@ -187,13 +177,13 @@ Completion messages render with a colored background and are expandable with `Ct
 
 ```typescript
 // Named agent with defaults from agent definition
-subagent({ name: "Scout", agent: "scout", task: "Analyze the codebase..." });
+subagent({ name: "Lookup", agent: "lookup", task: "Analyze the codebase..." });
 
 // Force a full-context fork for this spawn
-subagent({ name: "Iterate", fork: true, task: "Fix the bug where..." });
+subagent({ name: "Bugfix", fork: true, task: "Fix the bug where..." });
 
 // Agent defaults can choose a different session-mode via frontmatter
-subagent({ name: "Planner", agent: "planner", task: "Work through the design with me" });
+subagent({ name: "Brainstorm", agent: "brainstorm", task: "Work through the design with me" });
 
 // Custom working directory
 subagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer", task: "..." });
@@ -227,8 +217,8 @@ Run subagent tasks sequentially. Each task may reference the previous task's fin
 ```json
 {
   "tasks": [
-    { "name": "research", "agent": "scout", "task": "Summarize the auth flow" },
-    { "name": "plan",     "agent": "planner", "task": "Given {previous}, write a migration plan" }
+    { "name": "research", "agent": "lookup", "task": "Summarize the auth flow" },
+    { "name": "design",   "agent": "brainstorm", "task": "Given {previous}, write a migration plan" }
   ]
 }
 ```
@@ -247,9 +237,9 @@ Run subagent tasks concurrently with a cap.
 ```json
 {
   "tasks": [
-    { "name": "t1", "agent": "worker", "task": "Do thing A" },
-    { "name": "t2", "agent": "worker", "task": "Do thing B" },
-    { "name": "t3", "agent": "worker", "task": "Do thing C" }
+    { "name": "t1", "agent": "my-task-agent", "task": "Do thing A" },
+    { "name": "t2", "agent": "my-task-agent", "task": "Do thing B" },
+    { "name": "t3", "agent": "my-task-agent", "task": "Do thing C" }
   ],
   "maxConcurrency": 4
 }
@@ -320,7 +310,7 @@ The `caller_ping` tool lets a subagent request help from its parent agent. When 
 
 **Example:**
 ```typescript
-// Inside a worker subagent
+// Inside a subagent
 await caller_ping({
   message: "Found two conflicting migration files — should I use v1 or v2?"
 });
@@ -347,43 +337,6 @@ Cancelling a blocked task via `subagent_run_cancel` transitions it to `cancelled
 - Sync orchestrations (`wait: true` or omitted) continue today's behavior: `caller_ping` closes the pane and the task is recorded as `completed` with the ping message as `finalMessage`.
 - No disk persistence of registry / ownership map: a pi crash or `/reload` kills live async runs silently.
 - `subagent_resume` requires a mux backend in v1; without one it returns the standard mux-unavailable result.
-
----
-
-## The `/plan` Workflow
-
-The `/plan` command orchestrates a full planning-to-implementation pipeline.
-
-```
-/plan Add a dark mode toggle to the settings page
-```
-
-```
-Phase 1: Investigation    → Quick codebase scan
-Phase 2: Planning         → Interactive planner subagent (user collaborates)
-Phase 3: Review Plan      → Confirm todos, adjust if needed
-Phase 4: Execute          → Scout + sequential workers implement todos
-Phase 5: Review           → Reviewer subagent checks all changes
-```
-
-Tab/window titles update to show current phase:
-
-```
-🔍 Investigating: dark mode → 💬 Planning: dark mode
-→ 🔨 Executing: 1/3 → 🔎 Reviewing → ✅ Done
-```
-
----
-
-## The `/iterate` Workflow
-
-For quick, focused work without polluting the main session's context.
-
-```
-/iterate Fix the off-by-one error in the pagination logic
-```
-
-This always forks the current session into a subagent with full conversation context. It does not inherit an agent default `session-mode`. Make the fix, verify it, and exit to return. The main session gets a summary of what was done.
 
 ---
 
@@ -421,7 +374,7 @@ You are a specialized agent that does X...
 | `session-mode` | string | Default child-session mode: `standalone`, `lineage-only`, or `fork` |
 | `spawning`    | boolean | Set `false` to deny all subagent-spawning tools                                                                                                                                                                                                                             |
 | `deny-tools`  | string  | Comma-separated extension tool names to deny                                                                                                                                                                                                                                |
-| `auto-exit`   | boolean | Auto-shutdown when the agent finishes its turn — no `subagent_done` call needed. If the user sends any input, auto-exit is permanently disabled and the user takes over the session. Recommended for autonomous agents (scout, worker); not for interactive ones (planner). |
+| `auto-exit`   | boolean | Auto-shutdown when the agent finishes its turn — no `subagent_done` call needed. If the user sends any input, auto-exit is permanently disabled and the user takes over the session. Recommended for autonomous agents that run to completion; not for interactive ones where the user drives the session. |
 | `cwd`         | string  | Default working directory (absolute or relative to project root)                                                                                                                                                                                                            |
 | `disable-model-invocation` | boolean | Hide this agent from discovery surfaces like `subagents_list`. The agent still remains directly invokable by explicit name via `subagent({ agent: "name", ... })`. |
 
@@ -439,11 +392,11 @@ Choose how a subagent session starts:
 
 `lineage-only` is useful when you want session discovery and fork lineage UX to show the relationship later, but you do **not** want the child to inherit the parent's turns.
 
-`fork: true` on the tool call always forces the `fork` mode for that specific spawn. `/iterate` uses this explicit override on purpose.
+`fork: true` on the tool call always forces the `fork` mode for that specific spawn, regardless of any agent default `session-mode`.
 
 ```yaml
 ---
-name: planner
+name: my-interactive-agent
 session-mode: lineage-only
 ---
 ```
@@ -460,12 +413,12 @@ When set to `true`, the agent session shuts down automatically as soon as the ag
 
 **When to use:**
 
-- ✅ Autonomous agents (scout, worker, reviewer) that run to completion
-- ❌ Interactive agents (planner, iterate) where the user drives the session
+- ✅ Autonomous agents that run to completion without user input
+- ❌ Interactive agents where the user drives the session
 
 ```yaml
 ---
-name: scout
+name: my-autonomous-agent
 auto-exit: true
 ---
 ```
@@ -482,7 +435,7 @@ Denies all spawning tools (`subagent`, `subagents_list`, `subagent_resume`, `sub
 
 ```yaml
 ---
-name: worker
+name: my-restricted-agent
 spawning: false
 ---
 ```
@@ -509,13 +462,13 @@ deny-tools: subagent_run_parallel
 
 ### Recommended Configuration
 
-| Agent      | `spawning`  | Rationale                                    |
-| ---------- | ----------- | -------------------------------------------- |
-| planner    | _(default)_ | Legitimately spawns scouts for investigation |
-| worker     | `false`     | Should implement tasks, not delegate         |
-| researcher | `false`     | Should research, not spawn                   |
-| reviewer   | `false`     | Should review, not spawn                     |
-| scout      | `false`     | Should gather context, not spawn             |
+| Role pattern               | `spawning`  | Rationale                                              |
+| -------------------------- | ----------- | ------------------------------------------------------ |
+| Coordinator / orchestrator | _(default)_ | Legitimately spawns children for investigation or work |
+| Implementer                | `false`     | Should implement tasks, not delegate                   |
+| Researcher / investigator  | `false`     | Should research, not spawn                             |
+| Reviewer / judge           | `false`     | Should review, not spawn                               |
+| Context gatherer           | `false`     | Should gather context, not spawn                       |
 
 ---
 
@@ -557,8 +510,8 @@ spawning: false
 Every sub-agent session displays a compact tools widget showing available and denied tools. Toggle with `Ctrl+J`:
 
 ```
-[scout] — 12 tools · 4 denied  (Ctrl+J)              ← collapsed
-[scout] — 12 available  (Ctrl+J to collapse)          ← expanded
+[my-agent] — 12 tools · 4 denied  (Ctrl+J)            ← collapsed
+[my-agent] — 12 available  (Ctrl+J to collapse)        ← expanded
   read, bash, edit, write, todo, ...
   denied: subagent, subagents_list, ...
 ```

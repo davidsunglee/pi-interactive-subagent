@@ -162,7 +162,7 @@ for (const backend of backends) {
         `Call the subagent tool with these EXACT parameters:`,
         `  name: "Fork-${id}"`,
         `  fork: true`,
-        `  task: "Run this bash command: echo 'FORK_OK_${id}' > '${markerFile}'"`,
+        `  task: "Run this bash command: echo 'FORK_OK_${id}' > '${markerFile}'. After the bash command succeeds, call the subagent_done tool with summary: FORK_COMPLETE_${id}."`,
         `Do not set the agent parameter. Just set name, fork, and task.`,
         `After you receive the result, say FORK_COMPLETE.`,
       ].join("\n");
@@ -240,20 +240,20 @@ for (const backend of backends) {
       const surface = createTrackedSurface(env, `discovery-${id}`);
       await sleep(1000);
 
-      // Use subagents_list to verify test agents are discoverable,
-      // then spawn one to prove it works end-to-end.
+      // Use subagents_list to verify a visible project-local test agent is discoverable,
+      // then spawn it to prove discovery works end-to-end.
       const task = [
-        `First, call the subagents_list tool to see available agents.`,
+        `First, call the subagents_list tool and confirm test-discovery is listed.`,
         `Then call the subagent tool:`,
         `  name: "Disco-${id}"`,
-        `  agent: "test-echo"`,
+        `  agent: "test-discovery"`,
         `  task: "Run: echo 'DISCO_${id}' > '${markerFile}'"`,
         `After you receive the subagent result, say DISCOVERY_DONE.`,
       ].join("\n");
 
       startPi(surface, env.dir, task);
 
-      // The test-echo agent (discovered from project .pi/agents/) should work
+      // The test-discovery agent (discovered from project .pi/agents/) should work
       const content = await waitForFile(markerFile, PI_TIMEOUT, /DISCO/);
       assert.ok(content.includes(`DISCO_${id}`), `Discovery test marker should exist`);
     });

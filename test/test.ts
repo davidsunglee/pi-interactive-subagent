@@ -17,7 +17,18 @@ import {
   seedSubagentSessionFile,
 } from "../pi-extension/subagents/session.ts";
 
-import { shellEscape, isCmuxAvailable, isWezTermAvailable } from "../pi-extension/subagents/cmux.ts";
+import {
+  shellEscape,
+  isCmuxAvailable,
+  isWezTermAvailable,
+  parseCmuxFocusedSnapshot,
+  parseCmuxFocusedSnapshotFromJson,
+  parseCmuxJson,
+  parseCmuxPaneRefForSurface,
+  parseCmuxPaneRefForSurfaceFromJson,
+  buildTmuxSplitArgs,
+  shouldSetTmuxPaneTitle,
+} from "../pi-extension/subagents/cmux.ts";
 import {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
@@ -931,6 +942,168 @@ describe("cmux.ts", () => {
       assert.ok(escaped.endsWith("'"));
       // Inside single quotes, everything is literal
       assert.ok(escaped.includes("$world"));
+    });
+  });
+
+  // Regression coverage for upstream commit 6e336fe (PR #36):
+  // pure cmux JSON parsing helpers used by the focus snapshot/restore path
+  // around subagent pane creation. These power both runtime focus
+  // preservation in cmux and the integration harness's getFocusedSurface /
+  // getSurfacePane helpers.
+  describe("parseCmuxFocusedSnapshot", () => {
+    it("parses focused surface and pane refs", () => {
+      assert.deepEqual(
+        parseCmuxFocusedSnapshot({ focused: { surface_ref: "surface:3", pane_ref: "pane:2" } }),
+        { surfaceRef: "surface:3", paneRef: "pane:2" },
+      );
+    });
+
+    it("does not fall back to caller refs", () => {
+      assert.equal(
+        parseCmuxFocusedSnapshot({ caller: { surface_ref: "surface:1", pane_ref: "pane:1" } }),
+        null,
+      );
+    });
+
+    it("returns null for malformed values", () => {
+      assert.equal(parseCmuxFocusedSnapshot(null), null);
+      assert.equal(parseCmuxFocusedSnapshot({ focused: {} }), null);
+    });
+  });
+
+  describe("parseCmuxJson", () => {
+    it("returns null for malformed JSON text", () => {
+      assert.equal(parseCmuxJson("not json"), null);
+    });
+
+    it("parses valid JSON text", () => {
+      assert.deepEqual(parseCmuxJson('{"ok":true}'), { ok: true });
+    });
+  });
+
+  describe("parseCmuxFocusedSnapshotFromJson", () => {
+    it("returns null for malformed JSON text", () => {
+      assert.equal(parseCmuxFocusedSnapshotFromJson("not json"), null);
+    });
+
+    it("returns null when focused is absent or not an object", () => {
+      assert.equal(
+        parseCmuxFocusedSnapshotFromJson(
+          '{"focused":null,"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
+        ),
+        null,
+      );
+      assert.equal(
+        parseCmuxFocusedSnapshotFromJson('{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}'),
+        null,
+      );
+    });
+
+    it("parses focused refs without falling back to caller refs", () => {
+      assert.deepEqual(
+        parseCmuxFocusedSnapshotFromJson(
+          '{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"},"focused":{"surface_ref":"surface:2","pane_ref":"pane:3"}}',
+        ),
+        { surfaceRef: "surface:2", paneRef: "pane:3" },
+      );
+    });
+  });
+
+  describe("parseCmuxPaneRefForSurface", () => {
+    it("parses top-level pane refs for a surface", () => {
+      assert.equal(
+        parseCmuxPaneRefForSurface({ surface_ref: "surface:7", pane_ref: "pane:4" }, "surface:7"),
+        "pane:4",
+      );
+    });
+
+    it("parses caller pane refs for identify --surface output", () => {
+      assert.equal(
+        parseCmuxPaneRefForSurface(
+          { caller: { surface_ref: "surface:7", pane_ref: "pane:4" } },
+          "surface:7",
+        ),
+        "pane:4",
+      );
+    });
+
+    it("returns null when the surface does not match", () => {
+      assert.equal(
+        parseCmuxPaneRefForSurface({ surface_ref: "surface:8", pane_ref: "pane:4" }, "surface:7"),
+        null,
+      );
+    });
+  });
+
+  describe("parseCmuxPaneRefForSurfaceFromJson", () => {
+    it("returns null for malformed JSON text", () => {
+      assert.equal(parseCmuxPaneRefForSurfaceFromJson("not json", "surface:7"), null);
+    });
+
+    it("parses caller refs from cmux identify --surface JSON text", () => {
+      assert.equal(
+        parseCmuxPaneRefForSurfaceFromJson(
+          '{"caller":{"surface_ref":"surface:7","pane_ref":"pane:4"}}',
+          "surface:7",
+        ),
+        "pane:4",
+      );
+    });
+  });
+
+  // Regression coverage for the tmux-backend detached-launch contract used by
+  // orchestration wrappers (focus: false). Two invariants must hold together:
+  //   1. `tmux split-window` argv includes `-d` when opts.detach is true so
+  //      tmux does not transfer focus onto the new pane.
+  //   2. The follow-up `tmux select-pane -t <pane> -T <name>` cosmetic call
+  //      is skipped for detached launches because select-pane re-activates
+  //      the target pane as a side-effect, which would re-steal focus.
+  // The default (focused / non-detached) path must keep both behaviors
+  // unchanged: no `-d` flag, and the title call still runs.
+  describe("buildTmuxSplitArgs", () => {
+    it("includes -d when opts.detach is true", () => {
+      const args = buildTmuxSplitArgs("right", "%5", { detach: true });
+      assert.ok(args.includes("-d"), `expected -d in args, got ${JSON.stringify(args)}`);
+      // Sanity: split direction + target pane still propagate.
+      assert.ok(args.includes("-h"));
+      assert.ok(args.includes("-t"));
+      assert.ok(args.includes("%5"));
+      assert.ok(args.includes("-P"));
+      assert.deepEqual(args.slice(-3), ["-P", "-F", "#{pane_id}"]);
+    });
+
+    it("omits -d when opts.detach is false", () => {
+      const args = buildTmuxSplitArgs("right", "%5", { detach: false });
+      assert.equal(args.includes("-d"), false, `unexpected -d in args ${JSON.stringify(args)}`);
+    });
+
+    it("omits -d when opts is undefined (default focused launch)", () => {
+      const args = buildTmuxSplitArgs("right", "%5", undefined);
+      assert.equal(args.includes("-d"), false);
+    });
+
+    it("emits -b for left/up directions and -v for vertical splits", () => {
+      const left = buildTmuxSplitArgs("left", undefined, undefined);
+      assert.ok(left.includes("-h"));
+      assert.ok(left.includes("-b"));
+      const up = buildTmuxSplitArgs("up", undefined, undefined);
+      assert.ok(up.includes("-v"));
+      assert.ok(up.includes("-b"));
+      const down = buildTmuxSplitArgs("down", undefined, undefined);
+      assert.ok(down.includes("-v"));
+      assert.equal(down.includes("-b"), false);
+    });
+  });
+
+  describe("shouldSetTmuxPaneTitle", () => {
+    it("returns false when detach is true (skip select-pane -T to preserve focus)", () => {
+      assert.equal(shouldSetTmuxPaneTitle({ detach: true }), false);
+    });
+
+    it("returns true for the default focused launch so the title is still applied", () => {
+      assert.equal(shouldSetTmuxPaneTitle(undefined), true);
+      assert.equal(shouldSetTmuxPaneTitle({}), true);
+      assert.equal(shouldSetTmuxPaneTitle({ detach: false }), true);
     });
   });
 

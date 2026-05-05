@@ -1,4 +1,4 @@
-import { execSync, execFile, execFileSync } from "node:child_process";
+import { execSync, execFile, execFileSync, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,6 +185,241 @@ function zellijActionSync(args: string[], surface?: string): string {
 /** Tracked subagent pane for cmux — reused across subagent launches. */
 let cmuxSubagentPane: string | null = null;
 
+// ───────────────────────────────────────────────────────────────────────────
+// cmux focus preservation (upstream PR #36 / commit 6e336fe)
+//
+// Creating new cmux surfaces (via `cmux new-split` / `cmux new-surface`)
+// implicitly moves cmux's focused surface onto the freshly created child.
+// That is jarring for the user when they were focused on the parent agent
+// pane (or a different surface entirely) at the moment a subagent was
+// launched. We capture cmux's focused snapshot before the create, and
+// restore it afterwards if focus settled onto the new child / its source
+// surface / its caller pane.
+//
+// The pure parsing helpers below are exported so the integration harness
+// can implement equivalent `getFocusedSurface` / `getSurfacePane` lookups
+// without re-implementing the JSON shape, and so they have unit-test
+// coverage independent of a running cmux daemon.
+// ───────────────────────────────────────────────────────────────────────────
+
+type CmuxFocusSnapshot = {
+  surfaceRef?: string;
+  paneRef?: string;
+};
+
+type CmuxCreatedSurface = {
+  surface: string;
+  paneRef?: string;
+};
+
+type CmuxIdentifySnapshot = {
+  focused: CmuxFocusSnapshot | null;
+  caller: CmuxFocusSnapshot | null;
+};
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+export function parseCmuxFocusedSnapshot(value: unknown): CmuxFocusSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+
+  const focused = (value as { focused?: unknown }).focused;
+  if (!focused || typeof focused !== "object") return null;
+
+  const record = focused as { surface_ref?: unknown; pane_ref?: unknown };
+  const surfaceRef = nonEmptyString(record.surface_ref) ? record.surface_ref : undefined;
+  const paneRef = nonEmptyString(record.pane_ref) ? record.pane_ref : undefined;
+
+  if (!surfaceRef && !paneRef) return null;
+  return { surfaceRef, paneRef };
+}
+
+export function parseCmuxJson(value: string): unknown | null {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+export function parseCmuxFocusedSnapshotFromJson(value: string): CmuxFocusSnapshot | null {
+  return parseCmuxFocusedSnapshot(parseCmuxJson(value));
+}
+
+function parseCmuxCallerSnapshot(value: unknown): CmuxFocusSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+
+  const caller = (value as { caller?: unknown }).caller;
+  if (!caller || typeof caller !== "object") return null;
+
+  const record = caller as { surface_ref?: unknown; pane_ref?: unknown };
+  const surfaceRef = nonEmptyString(record.surface_ref) ? record.surface_ref : undefined;
+  const paneRef = nonEmptyString(record.pane_ref) ? record.pane_ref : undefined;
+
+  if (!surfaceRef && !paneRef) return null;
+  return { surfaceRef, paneRef };
+}
+
+export function parseCmuxPaneRefForSurface(value: unknown, surface: string): string | null {
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as { surface_ref?: unknown; pane_ref?: unknown; caller?: unknown };
+  if (record.surface_ref === surface && nonEmptyString(record.pane_ref)) return record.pane_ref;
+
+  const caller = record.caller;
+  if (!caller || typeof caller !== "object") return null;
+
+  const callerRecord = caller as { surface_ref?: unknown; pane_ref?: unknown };
+  if (callerRecord.surface_ref === surface && nonEmptyString(callerRecord.pane_ref)) {
+    return callerRecord.pane_ref;
+  }
+
+  return null;
+}
+
+export function parseCmuxPaneRefForSurfaceFromJson(value: string, surface: string): string | null {
+  return parseCmuxPaneRefForSurface(parseCmuxJson(value), surface);
+}
+
+function readCmux(args: string[]): string | null {
+  const result = spawnSync("cmux", args, { encoding: "utf8" });
+  if (result.error || result.status !== 0 || !result.stdout.trim()) return null;
+  return result.stdout;
+}
+
+function parseCmuxIdentifySnapshot(value: string | null): CmuxIdentifySnapshot {
+  const parsed = value ? parseCmuxJson(value) : null;
+  return {
+    focused: parseCmuxFocusedSnapshot(parsed),
+    caller: parseCmuxCallerSnapshot(parsed),
+  };
+}
+
+function captureCmuxIdentifySnapshot(): CmuxIdentifySnapshot {
+  return parseCmuxIdentifySnapshot(readCmux(["identify", "--json"]));
+}
+
+function captureCmuxFocusSnapshot(): CmuxFocusSnapshot | null {
+  return captureCmuxIdentifySnapshot().focused;
+}
+
+function readCmuxPaneRefForSurface(surface: string): string | null {
+  const info = readCmux(["identify", "--surface", surface]);
+  return info ? parseCmuxPaneRefForSurfaceFromJson(info, surface) : null;
+}
+
+function restoreCmuxFocusSnapshot(snapshot: CmuxFocusSnapshot | null): void {
+  if (!snapshot) return;
+
+  if (snapshot.paneRef) {
+    spawnSync("cmux", ["focus-pane", "--pane", snapshot.paneRef], { encoding: "utf8" });
+  }
+
+  if (snapshot.surfaceRef) {
+    spawnSync("cmux", ["focus-panel", "--panel", snapshot.surfaceRef], { encoding: "utf8" });
+  }
+}
+
+function waitForCmuxFocusSettle(): void {
+  // Sleep ~100ms without keeping the event loop busy. cmux's focus update is
+  // asynchronous relative to `cmux new-split` exit, so we have to give it a
+  // moment to settle before we sample the focused snapshot back.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+}
+
+function cmuxFocusMatchesChild(
+  currentFocus: CmuxFocusSnapshot | null,
+  child: CmuxCreatedSurface,
+): boolean {
+  if (!currentFocus) return false;
+  if (currentFocus.surfaceRef === child.surface) return true;
+  return !!currentFocus.paneRef && currentFocus.paneRef === child.paneRef;
+}
+
+function cmuxFocusMatchesSurfaceRef(
+  currentFocus: CmuxFocusSnapshot | null,
+  surfaceRef: string | undefined,
+): boolean {
+  return !!surfaceRef && currentFocus?.surfaceRef === surfaceRef;
+}
+
+function cmuxFocusMatchesPaneRef(
+  currentFocus: CmuxFocusSnapshot | null,
+  paneRef: string | undefined,
+): boolean {
+  return !!paneRef && currentFocus?.paneRef === paneRef;
+}
+
+function restoreCmuxFocusIfLaunchSurfaceFocused(
+  snapshot: CmuxFocusSnapshot | null,
+  child: CmuxCreatedSurface,
+  options?: { sourceSurfaceRef?: string; callerSnapshot?: CmuxFocusSnapshot | null },
+): void {
+  if (!snapshot) return;
+
+  waitForCmuxFocusSettle();
+  const currentFocus = captureCmuxFocusSnapshot();
+  if (
+    cmuxFocusMatchesChild(currentFocus, child) ||
+    cmuxFocusMatchesSurfaceRef(currentFocus, options?.sourceSurfaceRef) ||
+    cmuxFocusMatchesSurfaceRef(currentFocus, options?.callerSnapshot?.surfaceRef) ||
+    // cmux can settle focus onto another active surface in the caller pane
+    // after creating a split/surface; treat that as "focus moved as a
+    // side-effect of the launch" and restore the original snapshot.
+    cmuxFocusMatchesPaneRef(currentFocus, options?.callerSnapshot?.paneRef)
+  ) {
+    restoreCmuxFocusSnapshot(snapshot);
+  }
+}
+
+function parseCmuxCreatedSurface(output: string, command: string): CmuxCreatedSurface {
+  const surfaceMatch = output.match(/surface:\d+/);
+  if (!surfaceMatch) {
+    throw new Error(`Unexpected cmux ${command} output: ${output}`);
+  }
+
+  return {
+    surface: surfaceMatch[0],
+    paneRef: output.match(/pane:\d+/)?.[0],
+  };
+}
+
+function renameCmuxSurface(surface: string, name: string): void {
+  execFileSync("cmux", ["rename-tab", "--surface", surface, name], { encoding: "utf8" });
+}
+
+function createCmuxSplitSurface(
+  name: string,
+  direction: "left" | "right" | "up" | "down",
+  fromSurface?: string,
+): CmuxCreatedSurface {
+  const identifySnapshot = captureCmuxIdentifySnapshot();
+  const focusSnapshot = identifySnapshot.focused;
+  const callerSnapshot = identifySnapshot.caller;
+  let child: CmuxCreatedSurface | null = null;
+
+  try {
+    const args = ["new-split", direction];
+    if (fromSurface) args.push("--surface", fromSurface);
+
+    const output = execFileSync("cmux", args, { encoding: "utf8" }).trim();
+    child = parseCmuxCreatedSurface(output, "new-split");
+    child.paneRef ??= readCmuxPaneRefForSurface(child.surface) ?? undefined;
+    renameCmuxSurface(child.surface, name);
+    return child;
+  } finally {
+    if (child) {
+      restoreCmuxFocusIfLaunchSurfaceFocused(focusSnapshot, child, {
+        sourceSurfaceRef: fromSurface,
+        callerSnapshot,
+      });
+    } else {
+      restoreCmuxFocusSnapshot(focusSnapshot);
+    }
+  }
+}
+
 /**
  * Create a new terminal surface for a subagent.
  *
@@ -209,44 +444,85 @@ export function createSurface(name: string, opts?: { detach?: boolean }): string
     cmuxSubagentPane = null;
   }
 
+  if (backend === "cmux") {
+    // Anchor cmux splits on the parent pi's surface so they don't follow
+    // the user's wandering focus, and capture/restore focus around the
+    // create so the new child surface doesn't steal focus on launch.
+    // See upstream commit 6e336fe (PR #36).
+    const created = createCmuxSplitSurface(name, "right", process.env.CMUX_SURFACE_ID);
+    cmuxSubagentPane = created.paneRef ?? null;
+    return created.surface;
+  }
+
   // On tmux, target the parent pi's pane so splits follow the agent, not the user's focus.
   // See https://github.com/HazAT/pi-interactive-subagents/issues/12
   const fromSurface = backend === "tmux" ? process.env.TMUX_PANE : undefined;
-  const surface = createSurfaceSplit(name, "right", fromSurface, opts);
-
-  // For cmux, remember the pane so future subagents become tabs in it
-  if (backend === "cmux") {
-    try {
-      const info = execSync(`cmux identify --surface ${shellEscape(surface)}`, {
-        encoding: "utf8",
-      });
-      const parsed = JSON.parse(info);
-      const paneRef = parsed?.caller?.pane_ref;
-      if (paneRef) {
-        cmuxSubagentPane = paneRef;
-      }
-    } catch {}
-  }
-
-  return surface;
+  return createSurfaceSplit(name, "right", fromSurface, opts);
 }
 
 /**
  * Create a new surface (tab) in an existing cmux pane.
  */
 function createSurfaceInPane(name: string, pane: string): string {
-  const out = execSync(`cmux new-surface --pane ${shellEscape(pane)}`, {
-    encoding: "utf8",
-  }).trim();
-  const match = out.match(/surface:\d+/);
-  if (!match) {
-    throw new Error(`Unexpected cmux new-surface output: ${out}`);
+  const identifySnapshot = captureCmuxIdentifySnapshot();
+  const focusSnapshot = identifySnapshot.focused;
+  const callerSnapshot = identifySnapshot.caller;
+  let child: CmuxCreatedSurface | null = null;
+
+  try {
+    const output = execFileSync("cmux", ["new-surface", "--pane", pane], {
+      encoding: "utf8",
+    }).trim();
+    child = parseCmuxCreatedSurface(output, "new-surface");
+    child.paneRef ??= pane;
+    renameCmuxSurface(child.surface, name);
+    return child.surface;
+  } finally {
+    if (child) {
+      restoreCmuxFocusIfLaunchSurfaceFocused(focusSnapshot, child, {
+        callerSnapshot,
+      });
+    } else {
+      restoreCmuxFocusSnapshot(focusSnapshot);
+    }
   }
-  const surface = match[0];
-  execSync(`cmux rename-tab --surface ${shellEscape(surface)} ${shellEscape(name)}`, {
-    encoding: "utf8",
-  });
-  return surface;
+}
+
+/**
+ * Build the argv passed to `tmux split-window` for `createSurfaceSplit`.
+ * Pure helper, exported for regression coverage of the detached-launch
+ * contract: `opts.detach` must include `-d` so tmux does not transfer focus
+ * onto the new pane (upstream PR #36 / orchestration `focus: false`).
+ */
+export function buildTmuxSplitArgs(
+  direction: "left" | "right" | "up" | "down",
+  fromSurface: string | undefined,
+  opts: { detach?: boolean } | undefined,
+): string[] {
+  const args = ["split-window"];
+  if (opts?.detach) args.push("-d");
+  if (direction === "left" || direction === "right") {
+    args.push("-h");
+  } else {
+    args.push("-v");
+  }
+  if (direction === "left" || direction === "up") {
+    args.push("-b");
+  }
+  if (fromSurface) {
+    args.push("-t", fromSurface);
+  }
+  args.push("-P", "-F", "#{pane_id}");
+  return args;
+}
+
+/**
+ * Whether the tmux backend should follow the split with a `select-pane -T`
+ * title call. That call re-activates the target pane as a side-effect, so we
+ * skip it for detached launches (which must leave focus on the parent agent).
+ */
+export function shouldSetTmuxPaneTitle(opts: { detach?: boolean } | undefined): boolean {
+  return !opts?.detach;
 }
 
 /**
@@ -262,46 +538,29 @@ export function createSurfaceSplit(
   const backend = requireMuxBackend();
 
   if (backend === "cmux") {
-    const surfaceArg = fromSurface ? ` --surface ${shellEscape(fromSurface)}` : "";
-    const out = execSync(`cmux new-split ${direction}${surfaceArg}`, {
-      encoding: "utf8",
-    }).trim();
-    const match = out.match(/surface:\d+/);
-    if (!match) {
-      throw new Error(`Unexpected cmux new-split output: ${out}`);
-    }
-    const surface = match[0];
-    execSync(`cmux rename-tab --surface ${shellEscape(surface)} ${shellEscape(name)}`, {
-      encoding: "utf8",
-    });
-    return surface;
+    return createCmuxSplitSurface(name, direction, fromSurface).surface;
   }
 
   if (backend === "tmux") {
-    const args = ["split-window"];
-    if (opts?.detach) args.push("-d");
-    if (direction === "left" || direction === "right") {
-      args.push("-h");
-    } else {
-      args.push("-v");
-    }
-    if (direction === "left" || direction === "up") {
-      args.push("-b");
-    }
-    if (fromSurface) {
-      args.push("-t", fromSurface);
-    }
-    args.push("-P", "-F", "#{pane_id}");
+    const args = buildTmuxSplitArgs(direction, fromSurface, opts);
 
     const pane = execFileSync("tmux", args, { encoding: "utf8" }).trim();
     if (!pane.startsWith("%")) {
       throw new Error(`Unexpected tmux split-window output: ${pane}`);
     }
 
-    try {
-      execFileSync("tmux", ["select-pane", "-t", pane, "-T", name], { encoding: "utf8" });
-    } catch {
-      // Optional.
+    // Set the tmux pane title only when we are not asked to detach focus.
+    // `select-pane -T name` re-activates the targeted pane as a side-effect,
+    // which would re-steal focus from the parent agent and defeat the
+    // detached launch contract used by orchestration wrappers (focus: false).
+    // Upstream PR #36 dropped this cosmetic call entirely; we keep it for the
+    // default `focus: true` path so existing UX is unchanged.
+    if (shouldSetTmuxPaneTitle(opts)) {
+      try {
+        execFileSync("tmux", ["select-pane", "-t", pane, "-T", name], { encoding: "utf8" });
+      } catch {
+        // Optional.
+      }
     }
     return pane;
   }
@@ -408,7 +667,7 @@ export function renameCurrentTab(title: string): void {
   }
 
   // zellij: rename the agent's own pane, not the whole tab. In multi-pane layouts,
-  // rename-tab clobbers the user's tab title whenever a subagent starts or /plan runs.
+  // rename-tab clobbers the user's tab title whenever a subagent starts.
   // Closes #21.
   const paneId = process.env.ZELLIJ_PANE_ID;
   if (paneId) {

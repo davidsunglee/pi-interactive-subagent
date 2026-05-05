@@ -24,7 +24,7 @@ At initial triage:
 2. `TODO-02d7aa5f` — P2 Upstream sync: port low-risk harness, auto-exit, and tool allowlist fixes
 3. `TODO-d779e69b` — P3 Upstream sync: port cmux/tmux mux UX fixes; zellij/WezTerm best-effort
 4. `TODO-8c06b75d` — P4 Upstream sync: manually port activity/status supervision and subagent_interrupt
-5. `TODO-70ce56ca` — P5 Upstream sync: decide bundled agents, commands, and skills cleanup
+5. `TODO-70ce56ca` — P5 Upstream sync: bundled agent/command cleanup decision implemented; project-local maintainer skills retained
 
 ## Commit ledger
 
@@ -35,7 +35,7 @@ At initial triage:
 | `aa3d34b` | `test(integration): load working-tree extension instead of installed package` | `PROCESSED` | `TODO-02d7aa5f` | Integration harness now invokes pi with the working-tree extension; locked in by `test/integration/harness-extension.test.ts` (3/3). |
 | `09f8a59` | `Merge pull request #29 from w-winter/feat/subagent-status-and-interrupt` | `EXPLICITLY_OUT_OF_SCOPE` | none | Merge commit only. Its tree is identical to second parent `aa3d34b`, so it has no independent changes to port; constituent commits `9f10962`, `eed32a9`, and `aa3d34b` are tracked separately. |
 | `8d803a6` | `chore(release): v3.4.0` | `EXPLICITLY_OUT_OF_SCOPE` | none | Release/version commit only. |
-| `48d2513` | `refactor(agents): merge spec agent into planner with lightweight clarification` | `EXPLICITLY_OUT_OF_SCOPE` | `TODO-70ce56ca` | Workflow/product decision, not part of upstream port. Separate cleanup todo may remove bundled agents/commands/skills entirely. |
+| `48d2513` | `refactor(agents): merge spec agent into planner with lightweight clarification` | `SUPERSEDED_OR_ALREADY_COVERED` | `TODO-70ce56ca` | Upstream consolidated package-bundled `spec` into package-bundled `planner`; this fork instead removed package-bundled agents and the `/plan` / `/iterate` command surface. No bundled planner/spec workflow remains to port. Project-local maintainer skills are retained separately from shipped agent/command surface. |
 | `2d343e3` | `chore(release): v3.5.0` | `EXPLICITLY_OUT_OF_SCOPE` | none | Release/version commit only. |
 | `269b485` | `feat(subagents): suppress stall steer messages for interactive subagents` | `TO_BE_PROCESSED` | `TODO-8c06b75d` | Adopt upstream-style `interactive` semantics when status supervision is ported: suppress stall/recovery notifications for user-driven panes only. |
 | `4c77573` | `chore(release): v3.5.1` | `EXPLICITLY_OUT_OF_SCOPE` | none | Release/version commit only. |

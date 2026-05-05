@@ -126,11 +126,11 @@ describe("registerOrchestrationTools", () => {
     // v5 review finding #1: the bare `subagent` tool already rejects when
     // params.agent === PI_SUBAGENT_AGENT; orchestration must match that
     // existing runtime invariant for `subagent_run_serial` / `subagent_run_parallel`
-    // (a `planner` session cannot launch another `planner` via the wrappers).
+    // (an `agent-a` session cannot launch another `agent-a` via the wrappers).
     //
     // The registrar accepts an injected `selfSpawn` check so this test
     // doesn't need to manipulate process.env. Inject a check that blocks
-    // agent name "planner"; verify a mixed task list with one "planner"
+    // agent name "agent-a"; verify a mixed task list with one "agent-a"
     // entry is rejected whole (no deps.launch calls, error shape matches
     // the bare tool).
     let launched = 0;
@@ -144,12 +144,12 @@ describe("registerOrchestrationTools", () => {
       },
     };
     const denyingSelfSpawn = (agent: string | undefined) =>
-      agent === "planner"
+      agent === "agent-a"
         ? {
             content: [
               {
                 type: "text" as const,
-                text: `You are the planner agent — do not start another planner. You were spawned to do this work yourself. Complete the task directly.`,
+                text: `You are the agent-a agent — do not start another agent-a. You were spawned to do this work yourself. Complete the task directly.`,
               },
             ],
             details: { error: "self-spawn blocked" },
@@ -169,9 +169,9 @@ describe("registerOrchestrationTools", () => {
       "call-4",
       {
         tasks: [
-          { agent: "scout", task: "t1" },
-          { agent: "planner", task: "t2" }, // offending task
-          { agent: "worker", task: "t3" },
+          { agent: "agent-b", task: "t1" },
+          { agent: "agent-a", task: "t2" }, // offending task
+          { agent: "agent-c", task: "t3" },
         ],
       },
       new AbortController().signal,
@@ -179,7 +179,7 @@ describe("registerOrchestrationTools", () => {
       { sessionManager: {} as any, cwd: "/tmp" },
     );
     assert.equal(launched, 0, "no task should be launched when any task is self-spawn-blocked");
-    assert.match(out.content[0].text, /planner agent/);
+    assert.match(out.content[0].text, /agent-a agent/);
     assert.equal(out.details.error, "self-spawn blocked");
   });
 
@@ -291,12 +291,12 @@ describe("registerOrchestrationTools", () => {
       },
     };
     const denyingSelfSpawn = (agent: string | undefined) =>
-      agent === "worker"
+      agent === "agent-c"
         ? {
             content: [
               {
                 type: "text" as const,
-                text: `You are the worker agent — do not start another worker. You were spawned to do this work yourself. Complete the task directly.`,
+                text: `You are the agent-c agent — do not start another agent-c. You were spawned to do this work yourself. Complete the task directly.`,
               },
             ],
             details: { error: "self-spawn blocked" },
@@ -316,8 +316,8 @@ describe("registerOrchestrationTools", () => {
       "call-5",
       {
         tasks: [
-          { agent: "scout", task: "t1" },
-          { agent: "worker", task: "t2" },
+          { agent: "agent-b", task: "t1" },
+          { agent: "agent-c", task: "t2" },
         ],
       },
       new AbortController().signal,
@@ -325,7 +325,7 @@ describe("registerOrchestrationTools", () => {
       { sessionManager: {} as any, cwd: "/tmp" },
     );
     assert.equal(launched, 0);
-    assert.match(out.content[0].text, /worker agent/);
+    assert.match(out.content[0].text, /agent-c agent/);
     assert.equal(out.details.error, "self-spawn blocked");
   });
 });

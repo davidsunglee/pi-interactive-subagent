@@ -131,17 +131,21 @@ Suggested handling:
 - Port this to `test/integration/harness.ts`.
 - Account for our broader integration suite and slow-lane split.
 
-## Maybe / product decision
+## Local cleanup decision now implemented
 
-### Merge spec agent into planner
+### Bundled agents and planning slash commands
 
 Relevant commit:
 
 - `48d2513` — `refactor(agents): merge spec agent into planner with lightweight clarification`
 
-Upstream removed the separate `spec` agent and folded lightweight requirements clarification into `planner`. Our fork still has distinct spec/planner flows and related skills/planning artifacts. This is a workflow/product choice rather than a clear bug fix.
+Upstream removed the separate package-bundled `spec` agent and folded lightweight requirements clarification into the package-bundled `planner` agent. This fork has now taken a different product direction: no package-bundled agent definitions ship, `pi-extension/subagents/plan-skill.md` has been removed, and neither `/plan` nor `/iterate` is registered. Users provide their own agents in `.pi/agents/` or `~/.pi/agent/agents/`.
 
-Recommendation: skip for now unless we intentionally want to simplify the planning workflow.
+Result:
+
+- There is no local bundled `spec`/`planner` workflow left to consolidate.
+- `48d2513` remains intentionally unported because the local agent/command cleanup supersedes its local applicability.
+- Project-local `.pi/skills/` entries are retained as maintainer workflow documentation; they are not package-bundled agent definitions or extension slash commands.
 
 ## Probably skip or already covered
 
@@ -156,8 +160,9 @@ Recommendation: skip for now unless we intentionally want to simplify the planni
 3. Port tool allowlist preservation (`a0c089a`) while preserving local lifecycle/orchestration reservations.
 4. Port mux focus/zellij/Windows improvements (`6e336fe`, `913dc9c`, `d99cd4b`).
 5. Plan a dedicated feature branch for activity/status snapshots and `subagent_interrupt` (`9f10962`, `269b485`, `b4b0287`).
-6. Defer planner/spec workflow consolidation unless explicitly desired.
+
+No planner/spec workflow consolidation remains to port; the local cleanup removed the bundled planning agents and `/plan` / `/iterate` command surface instead.
 
 ## Bottom line
 
-There are useful upstream changes, especially around auto-exit, tool allowlists, pane status supervision, interrupt support, and mux UX. The fork is now far enough ahead in orchestration/headless functionality that we should treat upstream as a source of targeted patches rather than a branch to merge directly.
+There are useful upstream changes, especially around auto-exit, tool allowlists, pane status supervision, interrupt support, and mux UX. The fork is now far enough ahead in orchestration/headless functionality that we should treat upstream as a source of targeted patches rather than a branch to merge directly. Bundled planning-agent changes from upstream no longer apply directly because this fork now ships no package-bundled agents or planning slash commands.

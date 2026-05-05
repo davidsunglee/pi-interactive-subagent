@@ -45,7 +45,7 @@ export const SubagentParams = Type.Object({
   agent: Type.Optional(
     Type.String({
       description:
-        "Agent name to load defaults from (e.g. 'worker', 'scout', 'reviewer'). Reads ~/.pi/agent/agents/<name>.md for model, tools, skills.",
+        "Agent name to load defaults from. Reads ~/.pi/agent/agents/<name>.md for model, tools, skills.",
     }),
   ),
   systemPrompt: Type.Optional(
