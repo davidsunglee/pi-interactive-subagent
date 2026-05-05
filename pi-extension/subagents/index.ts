@@ -23,6 +23,8 @@ import {
   closeSurface,
   shellEscape,
   readScreen,
+  sendEscape,
+  getMuxBackend,
 } from "./cmux.ts";
 import {
   findLastAssistantMessage,
@@ -70,8 +72,27 @@ import {
   getAgentConfigDir,
   buildPiPromptArgs,
 } from "./launch-spec.ts";
-import { createStatusState, type SubagentStatusState } from "./status.ts";
-import { type SubagentActivityState, getSubagentActivityFile } from "./activity.ts";
+import {
+  createStatusState,
+  type SubagentStatusState,
+  type StatusSnapshot,
+  type StatusConfig,
+  advanceStatusState,
+  capStatusLines,
+  classifyStatus,
+  forceStatusAfterInterrupt,
+  formatStatusAggregate,
+  formatTransitionLine,
+  observeStatus,
+  loadStatusConfig,
+  DEFAULT_STATUS_LINE_LIMIT,
+} from "./status.ts";
+import {
+  type SubagentActivityState,
+  type ActivityReadResult,
+  getSubagentActivityFile,
+  readSubagentActivityFile,
+} from "./activity.ts";
 
 // Public re-exports so existing callers (other packages/tests) keep working
 // unchanged after the Task 9b refactor.
@@ -129,6 +150,7 @@ export function resolveResumeLaunchBehavior(params: { autoExit?: boolean }): {
 // /reload re-imports this file, giving fresh module-level state, but closures from
 // the old module keep running. See https://github.com/HazAT/pi-interactive-subagents/issues/5
 const WIDGET_INTERVAL_KEY = Symbol.for("pi-subagents/widget-interval");
+const STATUS_INTERVAL_KEY = Symbol.for("pi-subagents/status-interval");
 const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
 
 {
@@ -136,6 +158,11 @@ const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
   if (prevInterval) {
     clearInterval(prevInterval);
     (globalThis as any)[WIDGET_INTERVAL_KEY] = null;
+  }
+  const prevStatusInterval = (globalThis as any)[STATUS_INTERVAL_KEY];
+  if (prevStatusInterval) {
+    clearInterval(prevStatusInterval);
+    (globalThis as any)[STATUS_INTERVAL_KEY] = null;
   }
   const prevAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
   if (prevAbort) prevAbort.abort();
@@ -145,6 +172,16 @@ const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
 function getModuleAbortSignal(): AbortSignal {
   return ((globalThis as any)[POLL_ABORT_KEY] as AbortController).signal;
 }
+
+// Defensive fallback: the example config is created in Task 2 so this should
+// never fail in practice, but we guard against a missing file at extension load.
+let statusConfig = (() => {
+  try {
+    return loadStatusConfig();
+  } catch {
+    return { enabled: true, lineLimit: DEFAULT_STATUS_LINE_LIMIT };
+  }
+})();
 
 type AgentSource = "package" | "global" | "project";
 
@@ -425,6 +462,7 @@ export function registerHeadlessSubagent(entry: {
   };
   runningSubagents.set(entry.id, running);
   startWidgetRefresh();
+  if (piForRegistry) startStatusRefresh(piForRegistry);
 }
 
 export function updateHeadlessSubagentUsage(id: string, usage: UsageStats): void {
@@ -604,6 +642,12 @@ export const __test__ = {
   getVirtualBlocked() { return virtualBlocked; },
   // Step 14.2d: capture the last launch command for Claude-branch tests.
   getLastLaunchCommand(): string | null { return lastLaunchCommand; },
+  // Task 7 additions:
+  observeRunningSubagent,
+  startStatusRefresh,
+  activityLabel,
+  get statusConfig() { return statusConfig; },
+  setStatusConfig(value: StatusConfig) { statusConfig = value; },
 };
 
 function startWidgetRefresh() {
@@ -617,6 +661,103 @@ function startWidgetRefresh() {
   // real work is done.
   widgetInterval.unref?.();
   (globalThis as any)[WIDGET_INTERVAL_KEY] = widgetInterval;
+}
+
+function activityLabel(activity: SubagentActivityState): string | undefined {
+  if (activity.phase !== "active") return undefined;
+  if (activity.activeScope === "tool") return activity.toolName ?? "tool";
+  if (activity.activeScope === "provider") return "provider";
+  if (activity.activeScope === "streaming") return "streaming";
+  return activity.activeScope;
+}
+
+export function observeRunningSubagent(running: RunningSubagent, observedAt = Date.now()) {
+  if (!running.statusState) return;
+  if (running.blocked) return; // synthetic blocked virtual row; never read activity
+  if (running.cli === "claude") return; // claude has no activity file
+
+  const file = running.activityFile;
+  const read: ActivityReadResult = file
+    ? readSubagentActivityFile(file, running.id)
+    : { ok: false, reason: "missing" };
+
+  if (read.ok) {
+    running.activity = read.activity;
+    running.statusState = observeStatus(running.statusState, {
+      snapshot: "present",
+      updatedAt: read.activity.updatedAt,
+      sequence: read.activity.sequence,
+      phase: read.activity.phase,
+      active: read.activity.phase === "active",
+      activeScope: read.activity.activeScope,
+      activeSince: read.activity.activeSince,
+      waitingSince: read.activity.waitingSince,
+      latestEvent: read.activity.latestEvent,
+      activityLabel: activityLabel(read.activity),
+    }, observedAt);
+    return;
+  }
+
+  // TypeScript discriminated-union narrowing: `read.ok` is false here.
+  const failRead = read as Extract<ActivityReadResult, { ok: false }>;
+  running.statusState = observeStatus(running.statusState, {
+    snapshot: failRead.reason,
+    snapshotError: failRead.error,
+  }, observedAt);
+}
+
+let statusInterval: ReturnType<typeof setInterval> | null = null;
+
+function startStatusRefresh(pi: ExtensionAPI) {
+  if (!statusConfig.enabled || statusInterval) return;
+
+  statusInterval = setInterval(() => {
+    if (runningSubagents.size === 0) {
+      if (statusInterval) {
+        clearInterval(statusInterval);
+        statusInterval = null;
+        (globalThis as any)[STATUS_INTERVAL_KEY] = null;
+      }
+      return;
+    }
+
+    const transitionLines: string[] = [];
+    const now = Date.now();
+    let shouldRefreshWidget = false;
+
+    for (const running of runningSubagents.values()) {
+      if (running.blocked) continue; // synthetic — skip entirely
+      if (!running.statusState) continue;
+
+      observeRunningSubagent(running, now);
+      const { nextState, snapshot, transition } = advanceStatusState(running.statusState, now);
+      if (nextState.currentKind !== running.statusState.currentKind) {
+        shouldRefreshWidget = true;
+      }
+      running.statusState = nextState;
+
+      if (transition && !running.interactive) {
+        transitionLines.push(formatTransitionLine(running.name, snapshot, transition));
+      }
+    }
+
+    if (shouldRefreshWidget) updateWidget();
+
+    if (transitionLines.length > 0) {
+      const capped = capStatusLines(transitionLines, statusConfig.lineLimit);
+      pi.sendMessage(
+        {
+          customType: "subagent_status",
+          content: formatStatusAggregate(transitionLines, statusConfig.lineLimit),
+          display: true,
+          details: { lines: capped.visibleLines, overflow: capped.overflow },
+        },
+        { triggerTurn: true, deliverAs: "steer" },
+      );
+    }
+  }, 1000);
+  statusInterval.unref?.();
+  (globalThis as any)[STATUS_INTERVAL_KEY] = statusInterval;
 }
 
 interface ClaudeCmdInputs {
@@ -849,6 +990,7 @@ export async function launchSubagent(
 
     runningSubagents.set(id, running);
     startWidgetRefresh();   // idempotent via widgetInterval guard
+    if (piForRegistry) startStatusRefresh(piForRegistry);
     return running;
   }
 
@@ -981,6 +1123,7 @@ export async function launchSubagent(
 
   runningSubagents.set(id, running);
   startWidgetRefresh();   // idempotent via widgetInterval guard
+  if (piForRegistry) startStatusRefresh(piForRegistry);
   return running;
 }
 
@@ -1577,6 +1720,7 @@ const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
     virtualBlocked.set(key, entry);
     runningSubagents.set(entry.id, entry);
     startWidgetRefresh();
+    startStatusRefresh(piForRegistry);
     updateWidget();
     piForRegistry.sendMessage({
       customType: BLOCKED_KIND,
@@ -1633,6 +1777,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       clearInterval(widgetInterval);
       widgetInterval = null;
       (globalThis as any)[WIDGET_INTERVAL_KEY] = null;
+    }
+    if (statusInterval) {
+      clearInterval(statusInterval);
+      statusInterval = null;
+      (globalThis as any)[STATUS_INTERVAL_KEY] = null;
     }
     const moduleAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
     if (moduleAbort) moduleAbort.abort();
@@ -1705,6 +1854,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           };
           runningSubagents.set(id, running);
           startWidgetRefresh();
+          startStatusRefresh(pi);
 
           backend
             .watch(handle, effectiveWatchSignal, (partial) => {
@@ -1806,6 +1956,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         // Start widget refresh when first agent launches
         startWidgetRefresh();
+        startStatusRefresh(pi);
 
         // Fire-and-forget: start watching in background
         watchSubagent(running, watcherAbort.signal, {
@@ -2216,6 +2367,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         };
         runningSubagents.set(id, running);
         startWidgetRefresh();
+        startStatusRefresh(pi);
 
         // 8. Resume-start lifecycle transition for owned slots.
         registry.onResumeStarted(sessionKey);
