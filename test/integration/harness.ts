@@ -18,7 +18,7 @@ import {
   readFileSync,
   unlinkSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
@@ -50,7 +50,21 @@ export type { MuxBackend };
 // ── Paths ──
 
 const HARNESS_DIR = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = resolve(HARNESS_DIR, "..", "..");
 const TEST_AGENTS_SRC = join(HARNESS_DIR, "agents");
+
+/**
+ * Absolute path to the extension source in the working tree.
+ *
+ * Integration tests must exercise the code on the current branch — NOT the
+ * version installed as a pi-package under `~/.pi/agent/git/...` or the project
+ * mirror under `.pi/git/...`, which stays pinned to the last released tag.
+ *
+ * We force-load this file via `pi -ne -e <path>` in startPi() / buildPiCommand()
+ * below so local edits are always the code under test, regardless of what
+ * pi-packages are installed on the host.
+ */
+export const EXTENSION_SOURCE = join(PROJECT_ROOT, "pi-extension", "subagents", "index.ts");
 
 // ── Configuration ──
 
@@ -206,24 +220,38 @@ export function untrackSurface(env: TestEnv, surface: string): void {
  * The command ends with a sentinel so we can detect when pi exits:
  *   `pi ...; echo '__TEST_DONE_'$?'__'`
  */
-export function startPi(
-  surface: string,
+export function buildPiCommand(
   testDir: string,
   task: string,
   opts?: { model?: string; extraArgs?: string },
-): void {
+): string {
   const model = opts?.model ?? TEST_MODEL;
   const extra = opts?.extraArgs ?? "";
 
-  const cmd = [
+  // Force pi to load the working-tree extension (not an installed pi-package
+  // snapshot). `-ne` disables extension auto-discovery, `-e <path>` loads the
+  // current branch's source directly. Without this, the tests silently run
+  // against whatever version is checked out under `~/.pi/agent/git/...`.
+  return [
     `cd ${shellEscape(testDir)} &&`,
     `pi`,
+    `-ne`,
+    `-e ${shellEscape(EXTENSION_SOURCE)}`,
     `--model ${shellEscape(model)}`,
     extra,
     shellEscape(task),
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+export function startPi(
+  surface: string,
+  testDir: string,
+  task: string,
+  opts?: { model?: string; extraArgs?: string },
+): void {
+  const cmd = buildPiCommand(testDir, task, opts);
 
   sendLongCommand(surface, `${cmd}; echo '__TEST_DONE_'$?'__'`, {
     scriptPath: join(testDir, `test-launch-${Date.now()}.sh`),
