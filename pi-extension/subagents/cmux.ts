@@ -1204,6 +1204,27 @@ export function sendCommand(surface: string, command: string): void {
 }
 
 /**
+ * Send one Escape keypress to an active pane.
+ * Used by `subagent_interrupt` to cancel the current turn without killing the session.
+ */
+export function sendEscape(surface: string): void {
+  const backend = requireMuxBackend();
+  if (backend === "cmux") {
+    execFileSync("cmux", ["send", "--surface", surface, ""], { encoding: "utf8" });
+    return;
+  }
+  if (backend === "tmux") {
+    execFileSync("tmux", ["send-keys", "-t", surface, "Escape"], { encoding: "utf8" });
+    return;
+  }
+  if (backend === "wezterm") {
+    execFileSync("wezterm", ["cli", "send-text", "--pane-id", surface, "--no-paste", ""], { encoding: "utf8" });
+    return;
+  }
+  zellijActionSync(["write", "27"], surface);
+}
+
+/**
  * Send a long command to a pane by writing it to a script file first.
  * This avoids terminal line-wrapping issues that break commands exceeding the
  * pane's column width when sent character-by-character via sendCommand.

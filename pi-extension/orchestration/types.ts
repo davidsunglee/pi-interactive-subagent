@@ -28,7 +28,7 @@ export const OrchestrationTaskSchema = Type.Object({
   interactive: Type.Optional(
     Type.Boolean({
       description:
-        "Vestigial compat field. Accepted so legacy callers that still send `interactive` validate cleanly; has no runtime effect in v1.",
+        "When true, suppress stall/recovered status steer messages for this orchestration step (the main session is not woken by transitions). Defaults follow the agent frontmatter / auto-exit chain.",
     }),
   ),
   // Note: `permissionMode` is intentionally omitted — `launchSubagent()` does not

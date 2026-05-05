@@ -56,6 +56,7 @@ import {
   type ResolvedLaunchSpec,
   type SubagentSessionMode,
   resolveLaunchSpec,
+  resolveEffectiveInteractive,
   resolvePiToolsArg,
   writeSystemPromptArtifact,
   writeTaskArtifact,
@@ -75,6 +76,7 @@ import {
 export {
   SubagentParams,
   resolveLaunchSpec,
+  resolveEffectiveInteractive,
   loadAgentDefaults,
   resolveSubagentPaths,
   resolveLaunchBehavior,
@@ -247,6 +249,7 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
     denyTools: getFrontmatterValue(frontmatter, "deny-tools"),
     spawning: parseOptionalBoolean(getFrontmatterValue(frontmatter, "spawning")),
     autoExit: parseOptionalBoolean(getFrontmatterValue(frontmatter, "auto-exit")),
+    interactive: parseOptionalBoolean(getFrontmatterValue(frontmatter, "interactive")),
     sessionMode: parseSessionMode(getFrontmatterValue(frontmatter, "session-mode")),
     cwd: getFrontmatterValue(frontmatter, "cwd"),
     cli: getFrontmatterValue(frontmatter, "cli"),
@@ -560,6 +563,7 @@ export const __test__ = {
   resolveEffectiveSessionMode,
   resolveLaunchBehavior,
   resolveResumeLaunchBehavior,
+  resolveEffectiveInteractive,
   buildPiPromptArgs,
   // Task 7b additions:
   setLauncherDepsOverride(deps: LauncherDeps | null) { launcherDepsOverride = deps; },

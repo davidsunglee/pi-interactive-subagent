@@ -28,6 +28,7 @@ export interface AgentDefaults {
   denyTools?: string;
   spawning?: boolean;
   autoExit?: boolean;
+  interactive?: boolean;
   systemPromptMode?: "append" | "replace";
   sessionMode?: SubagentSessionMode;
   cwd?: string;
@@ -97,7 +98,7 @@ export const SubagentParams = Type.Object({
   interactive: Type.Optional(
     Type.Boolean({
       description:
-        "Vestigial compat field. Accepted for legacy callers but has no runtime effect in v1 — neither the pane nor the headless backend honors it. Do not rely on this field.",
+        "Mark the subagent as interactive (long-running, user drives the conversation in its own pane). When true, the main session is not woken by status transitions (stalled/recovered) for this subagent. If omitted, falls back to the agent's `interactive` frontmatter, otherwise the inverse of `auto-exit` (agents that auto-exit are autonomous and get stall pings; agents that don't are interactive and stay quiet).",
     }),
   ),
 });
@@ -140,6 +141,7 @@ export interface ResolvedLaunchSpec {
   artifactDir: string;
 
   autoExit: boolean;
+  effectiveInteractive: boolean;
   /**
    * Claude-only system-prompt addendum that ends with a `subagent_done`
    * instruction. Populated only on the Claude pane path (`effectiveCli ===
@@ -256,6 +258,7 @@ function parseAgentDefaultsFromContent(content: string): AgentDefaults | null {
     denyTools: getFrontmatterValue(frontmatter, "deny-tools"),
     spawning: parseOptionalBoolean(getFrontmatterValue(frontmatter, "spawning")),
     autoExit: parseOptionalBoolean(getFrontmatterValue(frontmatter, "auto-exit")),
+    interactive: parseOptionalBoolean(getFrontmatterValue(frontmatter, "interactive")),
     sessionMode: parseSessionMode(getFrontmatterValue(frontmatter, "session-mode")),
     cwd: getFrontmatterValue(frontmatter, "cwd"),
     cli: getFrontmatterValue(frontmatter, "cli"),
@@ -399,6 +402,15 @@ export function resolveLaunchBehavior(
     inheritsConversationContext,
     taskDelivery: inheritsConversationContext ? "direct" : "artifact",
   };
+}
+
+export function resolveEffectiveInteractive(
+  params: SubagentParamsType,
+  agentDefs: AgentDefaults | null,
+): boolean {
+  if (params.interactive != null) return params.interactive;
+  if (agentDefs?.interactive != null) return agentDefs.interactive;
+  return !(agentDefs?.autoExit ?? false);
 }
 
 /**
@@ -623,6 +635,8 @@ export function resolveLaunchSpec(
     configRootEnv.PI_CODING_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
   }
 
+  const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs);
+
   return {
     name: params.name,
     task: params.task,
@@ -655,6 +669,7 @@ export function resolveLaunchSpec(
     artifactDir,
 
     autoExit: agentDefs?.autoExit === true,
+    effectiveInteractive,
     claudeCompletionAddendum:
       effectiveCli === "claude"
         ? buildClaudeCompletionAddendum(agentDefs?.autoExit === true)
