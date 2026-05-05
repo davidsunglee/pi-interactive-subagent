@@ -553,6 +553,24 @@ function borderBottom(width: number): string {
   return `${ACCENT}╰${"─".repeat(inner)}╯${RST}`;
 }
 
+function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
+  if (snapshot.kind === "starting") return " starting… ";
+  if (snapshot.kind === "running") return ` running ${snapshot.elapsedText} `;
+  if (snapshot.kind === "active") {
+    const label = snapshot.activityLabel ?? snapshot.activeScope;
+    const duration = snapshot.activeDurationText ? ` ${snapshot.activeDurationText}` : "";
+    return label ? ` active · ${label}${duration} ` : " active ";
+  }
+  if (snapshot.kind === "waiting") {
+    const duration = snapshot.waitingDurationText ? ` ${snapshot.waitingDurationText}` : "";
+    const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : "";
+    return ` waiting${duration}${detail} `;
+  }
+  const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : "";
+  const duration = snapshot.snapshotProblemText ? ` ${snapshot.snapshotProblemText}` : "";
+  return ` stalled${detail}${duration} `;
+}
+
 function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): string[] {
   const count = agents.length;
   const title = "Subagents";
@@ -567,8 +585,9 @@ function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): st
     let right: string;
     if (agent.blocked) {
       right = " blocked — awaiting parent ";
-    } else if (agent.usage) {
-      right = ` ${formatUsageStats(agent.usage)} `;
+    } else if (statusConfig.enabled && agent.statusState) {
+      const snapshot = classifyStatus(agent.statusState, Date.now());
+      right = formatWidgetRightLabel(snapshot);
     } else if (agent.cli === "claude") {
       right = " running… ";
     } else {
@@ -613,6 +632,7 @@ export const __test__ = {
   borderLine,
   getShellReadyDelayMs,
   renderSubagentWidgetLines,
+  formatWidgetRightLabel,
   loadAgentDefaults,
   discoverAgentDefinitions,
   resolveEffectiveSessionMode,
@@ -648,6 +668,10 @@ export const __test__ = {
   activityLabel,
   get statusConfig() { return statusConfig; },
   setStatusConfig(value: StatusConfig) { statusConfig = value; },
+  // Task 9 additions:
+  resolveInterruptTarget,
+  requestSubagentInterrupt,
+  handleSubagentInterrupt,
 };
 
 function startWidgetRefresh() {
@@ -704,6 +728,74 @@ export function observeRunningSubagent(running: RunningSubagent, observedAt = Da
     snapshot: failRead.reason,
     snapshotError: failRead.error,
   }, observedAt);
+}
+
+function resolveInterruptTarget(params: { id?: string; name?: string }):
+  | { running: RunningSubagent }
+  | { error: string } {
+  const requestedId = params.id?.trim();
+  if (requestedId) {
+    const running = runningSubagents.get(requestedId);
+    return running ? { running } : { error: `No running subagent with id "${requestedId}".` };
+  }
+  const requestedName = params.name?.trim();
+  if (!requestedName) return { error: "Provide a running subagent id or exact display name." };
+  const matches = Array.from(runningSubagents.values()).filter((r) => r.name === requestedName);
+  if (matches.length === 1) return { running: matches[0] };
+  if (matches.length === 0) return { error: `No running subagent named "${requestedName}".` };
+  const candidates = matches.map((r) => `${r.name} [${r.id}]`).join(", ");
+  return { error: `Ambiguous subagent name "${requestedName}". Matches: ${candidates}` };
+}
+
+function requestSubagentInterrupt(
+  running: RunningSubagent,
+  sendEscapeKey: (surface: string) => void = sendEscape,
+): { ok: true } | { error: string } {
+  try {
+    sendEscapeKey(running.surface!);
+    return { ok: true };
+  } catch (error: any) {
+    const backend = getMuxBackend() ?? "unknown";
+    return { error: `Failed to send Escape to subagent "${running.name}" via ${backend}: ${error?.message ?? String(error)}` };
+  }
+}
+
+function handleSubagentInterrupt(
+  params: { id?: string; name?: string },
+  sendEscapeKey: (surface: string) => void = sendEscape,
+) {
+  const resolved = resolveInterruptTarget(params);
+  if ("error" in resolved) {
+    return { content: [{ type: "text" as const, text: resolved.error }], details: { error: resolved.error } };
+  }
+  const running = resolved.running;
+
+  if (running.cli === "claude") {
+    const text = "Turn-only Escape interrupt is currently supported only for pane-Pi subagents. Claude-backed semantics have not been verified yet.";
+    return { content: [{ type: "text" as const, text }], details: { error: "claude interrupt unsupported", id: running.id, name: running.name } };
+  }
+  if (running.backend !== "pane") {
+    const text = "Turn-only Escape interrupt is currently supported only for pane-Pi subagents. Headless subagents have no surface to receive an Escape.";
+    return { content: [{ type: "text" as const, text }], details: { error: "headless interrupt unsupported", id: running.id, name: running.name } };
+  }
+
+  const now = Date.now();
+  observeRunningSubagent(running, now);
+
+  const interruption = requestSubagentInterrupt(running, sendEscapeKey);
+  if ("error" in interruption) {
+    return { content: [{ type: "text" as const, text: interruption.error }], details: { error: interruption.error, id: running.id, name: running.name } };
+  }
+
+  if (running.statusState) {
+    running.statusState = forceStatusAfterInterrupt(running.statusState, now);
+  }
+  updateWidget();
+
+  return {
+    content: [{ type: "text" as const, text: `Interrupt requested for subagent "${running.name}".` }],
+    details: { id: running.id, name: running.name, status: "interrupt_requested" },
+  };
 }
 
 let statusInterval: ReturnType<typeof setInterval> | null = null;
@@ -2092,6 +2184,35 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
 
         // Fallback (shouldn't happen)
+        const first = result.content?.[0];
+        const text = first && first.type === "text" ? first.text : "";
+        return new Text(theme.fg("dim", text), 0, 0);
+      },
+    } as any);
+
+  // ── subagent_interrupt tool ──
+  if (shouldRegister("subagent_interrupt"))
+    pi.registerTool({
+      name: "subagent_interrupt",
+      label: "Interrupt Subagent",
+      description: "Send Escape to the active turn of a currently running pane-Pi subagent. The child pane, session, watcher, and running entry remain alive; this returns only a local acknowledgement and does not emit a subagent_result solely because of this request.",
+      promptSnippet: "Send Escape to the active turn of a currently running pane-Pi subagent. The child pane, session, watcher, and running entry remain alive; this returns only a local acknowledgement and does not emit a subagent_result solely because of this request.",
+      parameters: Type.Object({
+        id: Type.Optional(Type.String({ description: "Exact running subagent id" })),
+        name: Type.Optional(Type.String({ description: "Exact running subagent display name" })),
+      }),
+      async execute(_toolCallId: string, params: { id?: string; name?: string }) {
+        return handleSubagentInterrupt(params);
+      },
+      renderCall(args, theme) {
+        const target = args.id ? `${args.id}` : args.name ?? "(unknown)";
+        return new Text(theme.fg("accent", "▸") + " " + theme.fg("toolTitle", theme.bold(target)) + theme.fg("dim", " — interrupt turn"), 0, 0);
+      },
+      renderResult(result, _opts, theme) {
+        const details = result.details as any;
+        if (details?.status === "interrupt_requested") {
+          return new Text(theme.fg("accent", "▸") + " " + theme.fg("toolTitle", theme.bold(details.name ?? details.id ?? "subagent")) + theme.fg("dim", " — interrupt requested"), 0, 0);
+        }
         const first = result.content?.[0];
         const text = first && first.type === "text" ? first.text : "";
         return new Text(theme.fg("dim", text), 0, 0);

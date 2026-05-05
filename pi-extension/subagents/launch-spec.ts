@@ -166,6 +166,7 @@ const SPAWNING_TOOLS = new Set([
   "subagent_run_serial",
   "subagent_run_parallel",
   "subagent_run_cancel", // forward-compat: registered in Task 6
+  "subagent_interrupt",
 ]);
 
 /**
