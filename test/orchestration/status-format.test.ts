@@ -3,11 +3,9 @@ import { strict as assert } from "node:assert";
 import {
   formatStatusLine,
   formatTransitionLine,
-  capStatusLines,
   formatStatusAggregate,
   normalizeStatusName,
   MAX_STATUS_NAME_LENGTH,
-  MAX_STATUS_LINE_LENGTH,
 } from "../../pi-extension/subagents/status.ts";
 
 test("status-format: formatStatusLine for kind starting", () => {

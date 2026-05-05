@@ -146,6 +146,11 @@ describe("headless-pi-status-supervision", { skip: SHOULD_SKIP, timeout: 120_000
       running!.statusState!.lastActivityAtMs = null;
       running!.statusState!.lastActivitySequence = null;
       running!.statusState!.snapshotProblemSinceMs = past;
+      running!.statusState!.activeNow = false;
+      running!.statusState!.activeSinceMs = null;
+      running!.statusState!.activeScope = null;
+      running!.statusState!.waitingSinceMs = null;
+      running!.statusState!.phase = null;
       // Drop activityFile so the supervision tick records snapshot=missing
       // instead of overwriting our seeded "stalled" state with a fresh read.
       running!.activityFile = undefined;

@@ -48,7 +48,6 @@ import { tailJsonlLines, type JsonlTailState } from "./backends/jsonl-tail.ts";
 import { parseClaudeStreamEvent, parseClaudeResult } from "./backends/claude-stream.ts";
 import { PI_TO_CLAUDE_TOOLS } from "./backends/tool-map.ts";
 import type { UsageStats, TranscriptMessage } from "./backends/types.ts";
-import { formatUsageStats } from "./ui/format.ts";
 import { renderRichSubagentResult, toTaskRows } from "./ui/headless-render.ts";
 import { createSubagentResultRenderer } from "./ui/subagent-result-renderer.ts";
 import {

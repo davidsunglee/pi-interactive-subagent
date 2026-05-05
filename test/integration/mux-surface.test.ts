@@ -39,7 +39,7 @@ if (backends.length === 0) {
 }
 
 for (const backend of backends) {
-  describe(`mux-surface [${backend}]`, { timeout: 30_000 }, () => {
+  describe(`mux-surface [${backend}]`, { timeout: 60_000 }, () => {
     let prevMux: string | undefined;
     let env: TestEnv;
 

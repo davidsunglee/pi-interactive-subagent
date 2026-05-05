@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseStatusConfig, loadStatusConfig } from "../../pi-extension/subagents/status.ts";
 
 test("status-config: parseStatusConfig with enabled true", () => {
@@ -29,13 +32,17 @@ test("status-config: parseStatusConfig throws on missing status.enabled", () => 
 });
 
 test("status-config: loadStatusConfig reads exampleFile when main missing", () => {
-  const examplePath = "/tmp/test-status-config.json";
+  const dir = mkdtempSync(join(tmpdir(), "status-config-"));
   try {
-    const result = loadStatusConfig("/tmp/nonexistent.json", examplePath);
-    // This test should fail during implementation
-    assert.fail("Should have thrown");
-  } catch (e) {
-    // Expected to fail initially
+    const mainPath = join(dir, "missing-config.json");
+    const examplePath = join(dir, "config.json.example");
+    writeFileSync(examplePath, JSON.stringify({ status: { enabled: true } }), "utf8");
+
+    const result = loadStatusConfig(mainPath, examplePath);
+
+    assert.deepEqual(result, { enabled: true, lineLimit: 4 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

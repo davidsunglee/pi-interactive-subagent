@@ -164,6 +164,7 @@ function readStatusConfigFile(configPath: string, examplePath: string): { source
     if (errno.code === "ENOENT") {
       throw new Error(
         `Missing subagent status config. Expected ${configPath} or ${examplePath}.`,
+        { cause: error },
       );
     }
     throw error;
@@ -181,7 +182,7 @@ export function loadStatusConfig(
     parsed = JSON.parse(rawConfig) as unknown;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Invalid JSON in subagent config ${sourcePath}: ${detail}`);
+    throw new Error(`Invalid JSON in subagent config ${sourcePath}: ${detail}`, { cause: error });
   }
 
   return parseStatusConfig(parsed, sourcePath);
