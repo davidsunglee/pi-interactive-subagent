@@ -136,6 +136,8 @@ export interface LaunchedHandle {
    * key the orchestration registry's ownership map.
    */
   sessionKey?: string;
+  /** Pi children only — path to the child-written activity-snapshot JSON file. */
+  activityFile?: string;
 }
 
 export const MAX_PARALLEL_HARD_CAP = 8;

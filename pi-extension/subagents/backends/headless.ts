@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { spawn as realSpawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { getSubagentActivityFile } from "../activity.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { LineBuffer } from "./line-buffer.ts";
@@ -207,10 +208,16 @@ export function makeHeadlessBackend(ctx: {
         abort,
       };
       const emit = (snap: BackendResult): void => emitPartial(entry, snap);
+      let piActivityFile: string | undefined;
+      if (spec.effectiveCli !== "claude") {
+        piActivityFile = getSubagentActivityFile(spec.artifactDir, id);
+        mkdirSync(dirname(piActivityFile), { recursive: true });
+      }
+
       entry.promise =
         spec.effectiveCli === "claude"
-          ? runClaudeHeadless({ spec, startTime, abort: abort.signal, ctx, emitPartial: emit })
-          : runPiHeadless({ spec, startTime, abort: abort.signal, ctx, emitPartial: emit });
+          ? runClaudeHeadless({ id, spec, startTime, abort: abort.signal, ctx, emitPartial: emit })
+          : runPiHeadless({ id, spec, startTime, abort: abort.signal, ctx, emitPartial: emit });
 
       launches.set(id, entry);
       return {
@@ -219,7 +226,7 @@ export function makeHeadlessBackend(ctx: {
         startTime,
         // Pi children: session file is known at launch.
         // Claude children: session key is late-bound via onSessionKey hook.
-        ...(spec.effectiveCli !== "claude" ? { sessionKey: spec.subagentSessionFile } : {}),
+        ...(spec.effectiveCli !== "claude" ? { sessionKey: spec.subagentSessionFile, activityFile: piActivityFile } : {}),
       };
     },
 
@@ -263,6 +270,7 @@ export function makeHeadlessBackend(ctx: {
 }
 
 interface RunParams {
+  id: string;
   spec: ResolvedLaunchSpec;
   startTime: number;
   abort: AbortSignal;
@@ -285,11 +293,14 @@ function makeAbortHandler(proc: ChildProcess, isExited: () => boolean): () => vo
 
 
 async function runPiHeadless(p: RunParams): Promise<BackendResult> {
-  const { spec, startTime, abort, ctx, emitPartial: emit } = p;
+  const { id, spec, startTime, abort, ctx, emitPartial: emit } = p;
   const transcript: TranscriptMessage[] = [];
   const usage = emptyUsage();
   let stderr = "";
   let terminalEvent = false;
+
+  const activityFile = getSubagentActivityFile(spec.artifactDir, id);
+  mkdirSync(dirname(activityFile), { recursive: true });
 
   if (spec.seededSessionMode) {
     seedSubagentSessionFile({
@@ -349,6 +360,8 @@ async function runPiHeadless(p: RunParams): Promise<BackendResult> {
     ...process.env as Record<string, string>,
     PI_SUBAGENT_NAME: spec.name,
     PI_SUBAGENT_SESSION: spec.subagentSessionFile,
+    PI_SUBAGENT_ID: id,
+    PI_SUBAGENT_ACTIVITY_FILE: activityFile,
     ...spec.configRootEnv,
   };
   if (spec.agent) childEnv.PI_SUBAGENT_AGENT = spec.agent;

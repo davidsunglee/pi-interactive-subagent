@@ -70,6 +70,8 @@ import {
   getAgentConfigDir,
   buildPiPromptArgs,
 } from "./launch-spec.ts";
+import { createStatusState, type SubagentStatusState } from "./status.ts";
+import { type SubagentActivityState, getSubagentActivityFile } from "./activity.ts";
 
 // Public re-exports so existing callers (other packages/tests) keep working
 // unchanged after the Task 9b refactor.
@@ -380,6 +382,14 @@ export interface RunningSubagent {
     taskIndex: number;
     message: string;
   };
+  /** Per-row supervision state. Synthetic blocked virtual rows do NOT carry this. */
+  statusState?: SubagentStatusState;
+  /** Most recent activity snapshot read by the supervision loop. */
+  activity?: SubagentActivityState;
+  /** Pi children only — path to the child-written activity-snapshot JSON file. */
+  activityFile?: string;
+  /** Suppress stall/recovered steer messages when true; resolved per the interactive chain. Defaults to false for synthetic rows. */
+  interactive?: boolean;
 }
 
 /** All currently running subagents, keyed by id. */
@@ -395,7 +405,11 @@ export function registerHeadlessSubagent(entry: {
   cli?: string;
   abortController?: AbortController;
   startTime?: number;
+  activityFile?: string;
+  interactive?: boolean;
+  source?: "pi" | "claude";
 }): void {
+  const startTimeMs = entry.startTime ?? Date.now();
   const running: RunningSubagent = {
     id: entry.id,
     name: entry.name,
@@ -403,8 +417,11 @@ export function registerHeadlessSubagent(entry: {
     agent: entry.agent,
     cli: entry.cli,
     backend: "headless",
-    startTime: entry.startTime ?? Date.now(),
+    startTime: startTimeMs,
     abortController: entry.abortController,
+    activityFile: entry.activityFile,
+    interactive: entry.interactive ?? false,
+    statusState: createStatusState({ source: entry.source ?? "pi", startTimeMs }),
   };
   runningSubagents.set(entry.id, running);
   startWidgetRefresh();
@@ -826,6 +843,8 @@ export async function launchSubagent(
       launchScriptFile,
       cli: "claude",
       sentinelFile,
+      interactive: spec.effectiveInteractive,
+      statusState: createStatusState({ source: "claude", startTimeMs: startTime }),
     };
 
     runningSubagents.set(id, running);
@@ -834,6 +853,9 @@ export async function launchSubagent(
   }
 
   // ── Pi CLI path ──
+
+  const activityFile = getSubagentActivityFile(spec.artifactDir, id);
+  mkdirSync(dirname(activityFile), { recursive: true });
 
   let piTailStartOffset = 0;
   if (spec.seededSessionMode) {
@@ -897,6 +919,8 @@ export async function launchSubagent(
     envParts.push(`PI_SUBAGENT_AUTO_EXIT=1`);
   }
   envParts.push(`PI_SUBAGENT_SESSION=${shellEscape(spec.subagentSessionFile)}`);
+  envParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);
+  envParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`);
   envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
   const envPrefix = envParts.join(" ") + " ";
 
@@ -950,6 +974,9 @@ export async function launchSubagent(
     piTailStartOffset,
     launchScriptFile,
     cli: "pi",
+    activityFile,
+    interactive: spec.effectiveInteractive,
+    statusState: createStatusState({ source: "pi", startTimeMs: startTime }),
   };
 
   runningSubagents.set(id, running);
@@ -2088,6 +2115,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         let command: string;
         let launchScriptFile: string;
         let resumeMsgFile: string | undefined;
+        let resumeActivityFile: string | undefined;
 
         if (isPiResume) {
           // --- pi sessionPath branch (existing logic, preserved) ---
@@ -2106,6 +2134,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             parts.push(shellEscape(`@${resumeMsgFile}`));
           }
 
+          resumeActivityFile = getSubagentActivityFile(artifactDir, id);
+          mkdirSync(dirname(resumeActivityFile), { recursive: true });
+
           const resumeEnvParts: string[] = [];
           if (process.env.PI_CODING_AGENT_DIR) {
             resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
@@ -2117,6 +2148,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           if (resumeAutoExit) {
             resumeEnvParts.push(`PI_SUBAGENT_AUTO_EXIT=1`);
           }
+          resumeEnvParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);
+          resumeEnvParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(resumeActivityFile)}`);
           const resumeEnvPrefix = resumeEnvParts.length > 0 ? resumeEnvParts.join(" ") + " " : "";
           command = `${resumeEnvPrefix}${parts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
           launchScriptFile = join(
@@ -2177,7 +2210,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           startTime,
           sessionFile: isPiResume ? params.sessionPath! : "",
           launchScriptFile,
-          ...(isPiResume ? {} : { cli: "claude" as const, sentinelFile }),
+          ...(isPiResume ? { activityFile: resumeActivityFile } : { cli: "claude" as const, sentinelFile }),
+          interactive: !resumeAutoExit,
+          statusState: createStatusState({ source: isPiResume ? "pi" : "claude", startTimeMs: startTime }),
         };
         runningSubagents.set(id, running);
         startWidgetRefresh();

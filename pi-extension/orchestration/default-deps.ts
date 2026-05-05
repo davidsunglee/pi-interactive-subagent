@@ -7,6 +7,8 @@ import {
   registerHeadlessSubagent,
   updateHeadlessSubagentUsage,
   unregisterHeadlessSubagent,
+  resolveEffectiveInteractive,
+  loadAgentDefaults,
 } from "../subagents/index.ts";
 import type {
   LauncherDeps,
@@ -47,6 +49,9 @@ export function makeDefaultDeps(ctx: {
       const params: BackendLaunchParams = task;
       const handle = await backend.launch(params, defaultFocus, signal);
       if (isHeadless) {
+        const agentDefs = task.agent ? loadAgentDefaults(task.agent) : null;
+        const interactive = resolveEffectiveInteractive({ ...task, name: handle.name }, agentDefs);
+        const source = task.cli === "claude" ? "claude" : "pi";
         registerHeadlessSubagent({
           id: handle.id,
           name: handle.name,
@@ -54,6 +59,9 @@ export function makeDefaultDeps(ctx: {
           agent: task.agent,
           cli: task.cli,
           startTime: handle.startTime,
+          activityFile: handle.activityFile,
+          interactive,
+          source,
         });
       }
       return handle;

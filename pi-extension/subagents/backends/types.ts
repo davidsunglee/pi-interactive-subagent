@@ -60,11 +60,10 @@ export interface BackendLaunchParams {
   resumeSessionId?: string;
   focus?: boolean;
   /**
-   * Vestigial compat field. The spec requires `interactive` to be accepted on
-   * public schemas for legacy callers, but neither backend honors it at
-   * runtime. Declared here so `OrchestrationTask` values (which accept the
-   * field after Task 4b) flow through `backend.launch(task, ...)` without
-   * structural mismatch. Do NOT branch on this field inside any backend.
+   * Mark the launch as interactive (long-running, user drives the conversation
+   * in its own pane). The backend only carries this field structurally; launch
+   * resolution computes the effective value and parent-side supervision uses it
+   * to suppress stalled/recovered status steer messages.
    */
   interactive?: boolean;
 }

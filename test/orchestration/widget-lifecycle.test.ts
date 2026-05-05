@@ -7,6 +7,7 @@ import {
   __test__,
 } from "../../pi-extension/subagents/index.ts";
 import { makeDefaultDeps } from "../../pi-extension/orchestration/default-deps.ts";
+import type { SubagentStatusState } from "../../pi-extension/subagents/status.ts";
 
 describe("widget lifecycle helpers", () => {
   it("registerHeadlessSubagent adds an entry to runningSubagents", () => {
@@ -71,6 +72,65 @@ describe("widget lifecycle helpers", () => {
     assert.ok(__test__.getRunningSubagents().has(id), "should exist before unregister");
     unregisterHeadlessSubagent(id);
     assert.ok(!__test__.getRunningSubagents().has(id), "should be gone after unregister");
+  });
+
+  it("registerHeadlessSubagent seeds activityFile, interactive, and statusState when provided", () => {
+    const id = "wl-status-" + Math.random().toString(36).slice(2);
+    const startTime = Date.now();
+    try {
+      registerHeadlessSubagent({
+        id,
+        name: "StatusAgent",
+        task: "status task",
+        activityFile: "/tmp/activity.json",
+        interactive: true,
+        source: "pi",
+        startTime,
+      });
+      const map = __test__.getRunningSubagents();
+      const entry = map.get(id);
+      assert.ok(entry, "entry should exist after register");
+      assert.equal(entry.activityFile, "/tmp/activity.json");
+      assert.equal(entry.interactive, true);
+      assert.ok(entry.statusState != null, "statusState must be set");
+      const ss = entry.statusState as SubagentStatusState;
+      assert.equal(ss.source, "pi");
+      assert.equal(ss.startTimeMs, startTime);
+      assert.equal(ss.currentKind, "starting", "pi source starts as 'starting'");
+    } finally {
+      unregisterHeadlessSubagent(id);
+    }
+  });
+
+  it("registerHeadlessSubagent defaults interactive to false and uses pi source when not provided", () => {
+    const id = "wl-default-" + Math.random().toString(36).slice(2);
+    try {
+      registerHeadlessSubagent({ id, name: "DefaultAgent", task: "default task" });
+      const map = __test__.getRunningSubagents();
+      const entry = map.get(id);
+      assert.ok(entry, "entry should exist");
+      assert.equal(entry.interactive, false, "interactive defaults to false");
+      assert.ok(entry.statusState != null, "statusState must be set even without explicit source");
+      const ss = entry.statusState as SubagentStatusState;
+      assert.equal(ss.source, "pi", "defaults to pi source");
+    } finally {
+      unregisterHeadlessSubagent(id);
+    }
+  });
+
+  it("registerHeadlessSubagent seeds claude statusState with running kind", () => {
+    const id = "wl-claude-" + Math.random().toString(36).slice(2);
+    try {
+      registerHeadlessSubagent({ id, name: "ClaudeAgent", task: "claude task", source: "claude" });
+      const map = __test__.getRunningSubagents();
+      const entry = map.get(id);
+      assert.ok(entry, "entry should exist");
+      const ss = entry.statusState as SubagentStatusState;
+      assert.equal(ss.source, "claude");
+      assert.equal(ss.currentKind, "running", "claude source starts as 'running'");
+    } finally {
+      unregisterHeadlessSubagent(id);
+    }
   });
 });
 
