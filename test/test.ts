@@ -28,6 +28,12 @@ import {
   parseCmuxPaneRefForSurfaceFromJson,
   buildTmuxSplitArgs,
   shouldSetTmuxPaneTitle,
+  isCmuxForegroundAppIdentity,
+  shouldRestoreCmuxFocusAfterLaunch,
+  canSplitZellijPane,
+  predictZellijSplitDirection,
+  selectZellijPlacement,
+  selectZellijStackPlacement,
 } from "../pi-extension/subagents/cmux.ts";
 import {
   shouldMarkUserTookOver,
@@ -1051,6 +1057,72 @@ describe("cmux.ts", () => {
     });
   });
 
+  describe("isCmuxForegroundAppIdentity", () => {
+    it("recognizes the cmux app by bundle id or localized name", () => {
+      assert.equal(
+        isCmuxForegroundAppIdentity({ bundleIdentifier: "com.cmuxterm.app", localizedName: "cmux" }),
+        true,
+      );
+      assert.equal(isCmuxForegroundAppIdentity({ localizedName: "CMUX" }), true);
+      assert.equal(
+        isCmuxForegroundAppIdentity({ bundleIdentifier: "company.thebrowser.Browser", localizedName: "Arc" }),
+        false,
+      );
+    });
+  });
+
+  describe("shouldRestoreCmuxFocusAfterLaunch", () => {
+    const snapshot = { surfaceRef: "surface:1", paneRef: "pane:1" };
+    const child = { surface: "surface:2", paneRef: "pane:2" };
+
+    it("skips focus restore when cmux was not the foreground macOS app", () => {
+      assert.equal(
+        shouldRestoreCmuxFocusAfterLaunch({
+          cmuxWasForeground: false,
+          snapshot,
+          currentFocus: { surfaceRef: "surface:2", paneRef: "pane:2" },
+          child,
+        }),
+        false,
+      );
+    });
+
+    it("skips focus restore when cmux is no longer foreground before restore", () => {
+      assert.equal(
+        shouldRestoreCmuxFocusAfterLaunch({
+          cmuxWasForeground: true,
+          cmuxIsForeground: false,
+          snapshot,
+          currentFocus: { surfaceRef: "surface:2", paneRef: "pane:2" },
+          child,
+        }),
+        false,
+      );
+    });
+
+    it("restores cmux-internal focus when cmux was foreground and launch moved focus", () => {
+      assert.equal(
+        shouldRestoreCmuxFocusAfterLaunch({
+          cmuxWasForeground: true,
+          snapshot,
+          currentFocus: { surfaceRef: "surface:2", paneRef: "pane:2" },
+          child,
+        }),
+        true,
+      );
+      assert.equal(
+        shouldRestoreCmuxFocusAfterLaunch({
+          cmuxWasForeground: true,
+          snapshot,
+          currentFocus: { surfaceRef: "surface:9", paneRef: "pane:3" },
+          child,
+          callerSnapshot: { surfaceRef: "surface:9", paneRef: "pane:3" },
+        }),
+        true,
+      );
+    });
+  });
+
   // Regression coverage for the tmux-backend detached-launch contract used by
   // orchestration wrappers (focus: false). Two invariants must hold together:
   //   1. `tmux split-window` argv includes `-d` when opts.detach is true so
@@ -1119,6 +1191,159 @@ describe("cmux.ts", () => {
     it("returns boolean based on WEZTERM_UNIX_SOCKET", () => {
       const result = isWezTermAvailable();
       assert.equal(typeof result, "boolean");
+    });
+  });
+
+  describe("zellij placement", () => {
+    const pane = (overrides: Partial<Record<string, unknown>>) => ({
+      id: 1,
+      is_plugin: false,
+      is_floating: false,
+      is_selectable: true,
+      exited: false,
+      pane_rows: 20,
+      pane_columns: 80,
+      tab_id: 1,
+      ...overrides,
+    });
+
+    it("matches Zellij direction and minimum split rules", () => {
+      assert.equal(predictZellijSplitDirection(pane({ pane_rows: 5, pane_columns: 11 })), "right");
+      assert.equal(predictZellijSplitDirection(pane({ pane_rows: 11, pane_columns: 5 })), "down");
+      assert.equal(predictZellijSplitDirection(pane({ pane_rows: 5, pane_columns: 10 })), null);
+      assert.equal(predictZellijSplitDirection(pane({ pane_rows: 4, pane_columns: 80 })), null);
+
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 5, pane_columns: 11 })), true);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 11, pane_columns: 5 })), true);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 5, pane_columns: 10 })), false);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 4, pane_columns: 80 })), false);
+
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 30, pane_columns: 100 }), 80, 20), false);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 45, pane_columns: 100 }), 80, 20), true);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 30, pane_columns: 170 }), 80, 20), true);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 31, pane_columns: 47 }), 50, 10), false);
+      assert.equal(canSplitZellijPane(pane({ pane_rows: 31, pane_columns: 77 }), 50, 10), true);
+    });
+
+    it("uses tab-scoped split only when all Zellij split candidates are safe", () => {
+      const plan = selectZellijPlacement(
+        [
+          pane({ id: 10, tab_id: 1, pane_rows: 40, pane_columns: 120 }),
+          pane({ id: 11, tab_id: 1, pane_rows: 120, pane_columns: 100 }),
+          pane({ id: 12, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
+        ],
+        10,
+      );
+
+      assert.deepEqual(plan, {
+        mode: "split",
+        anchorPaneId: 11,
+        targetPaneId: 11,
+        tabId: 1,
+        splitDirection: "down",
+      });
+    });
+
+    it("stacks when any Zellij split candidate would fall below Pi's configured minimum", () => {
+      const plan = selectZellijPlacement(
+        [
+          pane({ id: 10, tab_id: 1, pane_rows: 100, pane_columns: 47 }),
+          pane({ id: 11, tab_id: 1, pane_rows: 31, pane_columns: 77 }),
+        ],
+        10,
+        50,
+        10,
+      );
+
+      assert.deepEqual(plan, {
+        mode: "stack",
+        anchorPaneId: 11,
+        targetPaneId: 11,
+        tabId: 1,
+      });
+    });
+
+    it("stacks when Zellij would split a pane below Pi's usable minimum", () => {
+      const plan = selectZellijPlacement(
+        [
+          pane({ id: 10, tab_id: 1, pane_rows: 20, pane_columns: 20 }),
+          pane({ id: 11, tab_id: 1, pane_rows: 18, pane_columns: 60 }),
+          pane({ id: 12, tab_id: 1, pane_rows: 10, pane_columns: 70 }),
+        ],
+        10,
+      );
+
+      assert.deepEqual(plan, {
+        mode: "stack",
+        anchorPaneId: 11,
+        targetPaneId: 11,
+        tabId: 1,
+      });
+    });
+
+    it("never chooses the parent pane as the stack target", () => {
+      const plan = selectZellijStackPlacement(
+        [
+          pane({ id: 10, tab_id: 1, pane_rows: 60, pane_columns: 200 }),
+          pane({ id: 11, tab_id: 1, pane_rows: 10, pane_columns: 20 }),
+          pane({ id: 12, tab_id: 1, pane_rows: 8, pane_columns: 30 }),
+        ],
+        10,
+      );
+
+      assert.deepEqual(plan, {
+        mode: "stack",
+        anchorPaneId: 12,
+        targetPaneId: 12,
+        tabId: 1,
+      });
+    });
+
+    it("does not stack when the only usable pane is the parent", () => {
+      const plan = selectZellijStackPlacement(
+        [pane({ id: 10, tab_id: 1, pane_rows: 60, pane_columns: 200 })],
+        10,
+      );
+
+      assert.equal(plan, null);
+    });
+
+    it("stacks on the largest usable non-parent pane when none can split", () => {
+      const plan = selectZellijPlacement(
+        [
+          pane({ id: 10, tab_id: 1, pane_rows: 5, pane_columns: 10 }),
+          pane({ id: 11, tab_id: 1, pane_rows: 6, pane_columns: 8 }),
+          pane({ id: 12, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
+        ],
+        10,
+      );
+
+      assert.deepEqual(plan, {
+        mode: "stack",
+        anchorPaneId: 11,
+        targetPaneId: 11,
+        tabId: 1,
+      });
+    });
+
+    it("ignores floating, plugin, exited, unselectable, and other-tab panes", () => {
+      const plan = selectZellijPlacement(
+        [
+          pane({ id: 10, tab_id: 1, pane_rows: 5, pane_columns: 10 }),
+          pane({ id: 11, tab_id: 1, pane_rows: 60, pane_columns: 200, is_floating: true }),
+          pane({ id: 12, tab_id: 1, pane_rows: 60, pane_columns: 200, is_plugin: true }),
+          pane({ id: 13, tab_id: 1, pane_rows: 60, pane_columns: 200, exited: true }),
+          pane({ id: 14, tab_id: 1, pane_rows: 60, pane_columns: 200, is_selectable: false }),
+          pane({ id: 15, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
+        ],
+        10,
+      );
+
+      assert.equal(plan, null);
+    });
+
+    it("returns null when the parent pane cannot be found", () => {
+      assert.equal(selectZellijPlacement([pane({ id: 10 })], 99), null);
     });
   });
 });

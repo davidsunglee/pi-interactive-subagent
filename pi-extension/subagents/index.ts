@@ -3,6 +3,7 @@ import { keyHint } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { Box, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   readdirSync,
   readFileSync,
@@ -153,8 +154,11 @@ interface ListedAgentDefinition extends AgentDefinition {
   source: AgentSource;
 }
 
+/** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
+const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
+
 function getBundledAgentsDir(): string {
-  return join(dirname(new URL(import.meta.url).pathname), "../../agents");
+  return join(SUBAGENTS_DIR, "../../agents");
 }
 
 function getFrontmatterValue(frontmatter: string, key: string): string | undefined {
@@ -756,7 +760,7 @@ export async function launchSubagent(
   // ── Claude Code CLI path ──
   if (spec.effectiveCli === "claude") {
     const sentinelFile = `/tmp/pi-claude-${id}-done`;
-    const pluginDir = join(dirname(new URL(import.meta.url).pathname), "plugin");
+    const pluginDir = join(SUBAGENTS_DIR, "plugin");
     const pluginDirResolved = existsSync(pluginDir) ? pluginDir : undefined;
 
     // Claude CLI has no skills equivalent — emit the shared warning before
@@ -846,7 +850,7 @@ export async function launchSubagent(
   const parts: string[] = ["pi"];
   parts.push("--session", shellEscape(spec.subagentSessionFile));
 
-  const subagentDonePath = join(dirname(new URL(import.meta.url).pathname), "subagent-done.ts");
+  const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
   parts.push("-e", shellEscape(subagentDonePath));
 
   if (spec.effectiveModel) {
@@ -2084,7 +2088,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         if (isPiResume) {
           // --- pi sessionPath branch (existing logic, preserved) ---
           const parts = ["pi", "--session", shellEscape(params.sessionPath!)];
-          const subagentDonePath = join(dirname(new URL(import.meta.url).pathname), "subagent-done.ts");
+          const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
           parts.push("-e", shellEscape(subagentDonePath));
 
           if (params.message) {
@@ -2120,7 +2124,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           // v1 gap: if the Claude child rotates its session id after resume, ownership
           // should update via updateSessionKey — not implemented in v1.
           sentinelFile = `/tmp/pi-claude-${id}-done`;
-          const pluginDir = join(dirname(new URL(import.meta.url).pathname), "plugin");
+          const pluginDir = join(SUBAGENTS_DIR, "plugin");
           const pluginDirResolved = existsSync(pluginDir) ? pluginDir : undefined;
           const cmdParts = buildClaudeCmdParts({
             sentinelFile,
