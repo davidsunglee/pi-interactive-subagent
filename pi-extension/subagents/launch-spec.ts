@@ -166,9 +166,6 @@ const SPAWNING_TOOLS = new Set([
   "subagent_run_cancel", // forward-compat: registered in Task 6
 ]);
 
-/** Pi CLI built-in tool names recognized by `--tools`. */
-const PI_BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
-
 /**
  * Lifecycle tools injected by the `subagent-done.ts` pi extension. Under a
  * restrictive `--tools` allowlist pi would otherwise strip these, breaking the
@@ -184,21 +181,29 @@ const PI_LIFECYCLE_TOOLS = ["caller_ping", "subagent_done"] as const;
  * declaration. Returns `undefined` when no restriction should be applied (and
  * pi should run with its default tool surface).
  *
- * Tokens from `PI_BUILTIN_TOOLS` and `SPAWNING_TOOLS` survive the filter;
- * `PI_BUILTIN_TOOLS` carries pi's native tool surface and `SPAWNING_TOOLS`
- * carries the orchestration tools that coordinator agents must explicitly opt into.
+ * Pi 0.70+ applies `--tools` to built-in, extension, and custom tools, so
+ * every requested tool name is preserved verbatim — including custom or
+ * extension-registered tools the harness does not enumerate (upstream
+ * a0c089a). This honours the user's `tools:` declaration without silently
+ * narrowing or broadening the surface.
+ *
  * The lifecycle tools (`caller_ping`, `subagent_done`) are always reserved
- * when we emit a restrictive list — see the review-v6 blocker fix for why
- * pi-backed headless subagents were unable to enter the `blocked` state.
+ * when we emit a restrictive list so the block/done contract still holds —
+ * see the review-v6 blocker fix for why pi-backed headless subagents were
+ * unable to enter the `blocked` state when these were dropped. Coordinator /
+ * orchestration tools (`SPAWNING_TOOLS`) are not auto-reserved here: a
+ * coordinator agent must list them in its own `tools:` declaration, and
+ * because requested tools are now passed through verbatim those listings
+ * survive the allowlist unchanged.
  */
 export function resolvePiToolsArg(effectiveTools: string | undefined): string | undefined {
   if (!effectiveTools) return undefined;
-  const allowed = effectiveTools
+  const requested = effectiveTools
     .split(",")
     .map((t) => t.trim())
-    .filter((t) => PI_BUILTIN_TOOLS.has(t) || SPAWNING_TOOLS.has(t));
-  if (allowed.length === 0) return undefined;
-  const merged = new Set<string>([...allowed, ...PI_LIFECYCLE_TOOLS]);
+    .filter(Boolean);
+  if (requested.length === 0) return undefined;
+  const merged = new Set<string>([...requested, ...PI_LIFECYCLE_TOOLS]);
   return [...merged].join(",");
 }
 

@@ -123,13 +123,9 @@ describe("runSerial inflight state stamping", () => {
 
   it("preserves terminal state in results when second step starts", async () => {
     const capturedUpdates: Array<{ content: { type: "text"; text: string }[]; details: any }> = [];
-    let step2Started = false;
 
     const deps: LauncherDeps = {
       async launch(task) {
-        if (task.name === "step-2") {
-          step2Started = true;
-        }
         return { id: task.name!, name: task.name!, startTime: Date.now() };
       },
       async waitForCompletion(handle, _signal, onUpdate) {

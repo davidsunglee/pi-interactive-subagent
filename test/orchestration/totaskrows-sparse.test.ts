@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { toTaskRows, type TaskRow } from "../../pi-extension/subagents/ui/headless-render.ts";
+import { toTaskRows } from "../../pi-extension/subagents/ui/headless-render.ts";
 import type { OrchestratedTaskResult } from "../../pi-extension/orchestration/types.ts";
 
 const completedRow: OrchestratedTaskResult = {

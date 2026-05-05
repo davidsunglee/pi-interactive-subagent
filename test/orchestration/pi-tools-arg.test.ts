@@ -30,12 +30,43 @@ describe("resolvePiToolsArg", () => {
     assert.equal(resolvePiToolsArg(undefined), undefined);
   });
 
-  it("returns undefined when every effectiveTools entry is unmapped (avoids emitting an empty --tools)", () => {
-    // Matches the Claude builder's contract: empty --tools means "no tools at
-    // all". An agent declaring only extension-registered tools should get
-    // unrestricted access, not a lockout, so we emit nothing rather than a
-    // lifecycle-only allowlist.
-    assert.equal(resolvePiToolsArg("weird, nonexistent"), undefined);
+  it("preserves custom/extension tool names verbatim alongside reserved lifecycle tools", () => {
+    // Upstream a0c089a: pi 0.70+ applies --tools to built-in, extension, and
+    // custom tools, so a restrictive `tools:` declaration that names a custom
+    // or extension-registered tool must pass that name through verbatim. The
+    // previous filter dropped non-builtin/non-orchestration tokens, which
+    // silently widened or narrowed the surface. Lifecycle tools must still be
+    // reserved.
+    const arg = resolvePiToolsArg("read, bash, web_search");
+    assert.ok(arg, "must emit a tools arg when at least one tool is requested");
+    const set = new Set(arg!.split(",").map((t) => t.trim()));
+    assert.ok(set.has("read"));
+    assert.ok(set.has("bash"));
+    assert.ok(
+      set.has("web_search"),
+      "custom/extension tool names must survive the allowlist filter",
+    );
+    assert.ok(set.has("caller_ping"));
+    assert.ok(set.has("subagent_done"));
+    // No broadening: only requested tools + reserved lifecycle tools.
+    assert.deepEqual(
+      [...set].sort(),
+      ["bash", "caller_ping", "read", "subagent_done", "web_search"],
+    );
+  });
+
+  it("emits a lifecycle-augmented allowlist even when no token matches a known builtin/orchestration tool", () => {
+    // Upstream a0c089a behavior: an agent declaring only extension-registered
+    // tools must still get a restrictive --tools so its declaration is
+    // honored. The previous behavior returned undefined (unrestricted) for
+    // `tools: weird, nonexistent`, which contradicted the user's restriction.
+    const arg = resolvePiToolsArg("weird, nonexistent");
+    assert.ok(arg !== undefined, "must emit a tools arg even for non-builtin requests");
+    const set = new Set(arg!.split(",").map((t) => t.trim()));
+    assert.ok(set.has("weird"));
+    assert.ok(set.has("nonexistent"));
+    assert.ok(set.has("caller_ping"));
+    assert.ok(set.has("subagent_done"));
   });
 
   it("deduplicates lifecycle tools if the caller already listed them", () => {
