@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   thinkingToEffort,
   buildClaudeCmdParts,
@@ -255,6 +258,122 @@ describe("buildClaudeCmdParts", () => {
     );
     assert.equal(identityOccurrences.length, 1,
       `identity must appear exactly once (after --append-system-prompt); got ${identityOccurrences.length}`);
+  });
+
+  it("transports a composed identity (agent body + caller systemPrompt) through --append-system-prompt without leaking it into the task body (TODO-dd074bb7)", () => {
+    const root = mkdtempSync(join(tmpdir(), "ls-claude-cmd-append-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "spm-append.md"),
+        "---\nmodel: m\nsystem-prompt: append\n---\nAGENT_APPEND_BODY\n",
+        "utf8",
+      );
+      const spec = resolveLaunchSpec(
+        {
+          name: "X",
+          task: "REAL_TASK_TEXT",
+          agent: "spm-append",
+          cwd: root,
+          systemPrompt: "PER_CALL_INSTRUCTIONS",
+        },
+        {
+          sessionManager: {
+            getSessionFile: () => "/tmp/parent.jsonl",
+            getSessionId: () => "sess-test",
+            getSessionDir: () => "/tmp",
+          } as any,
+          cwd: "/tmp",
+        },
+      );
+      assert.equal(spec.identity, "AGENT_APPEND_BODY\n\nPER_CALL_INSTRUCTIONS",
+        "spec composes both prompt sources before transport");
+
+      const parts = buildClaudeCmdParts({
+        sentinelFile: "/tmp/s",
+        pluginDir: undefined,
+        model: spec.claudeModelArg,
+        identity: spec.identity,
+        systemPromptMode: spec.systemPromptMode,
+        resumeSessionId: spec.resumeSessionId,
+        effectiveThinking: spec.effectiveThinking,
+        effectiveTools: spec.effectiveTools,
+        task: spec.claudeTaskBody,
+      });
+
+      const flagIdx = parts.indexOf("--append-system-prompt");
+      assert.ok(flagIdx >= 0,
+        "system-prompt: append must produce --append-system-prompt on the Claude pane path");
+      assert.equal(parts.includes("--system-prompt"), false,
+        "append mode must not also emit --system-prompt");
+      assert.equal(
+        parts[flagIdx + 1],
+        shellEscape("AGENT_APPEND_BODY\n\nPER_CALL_INSTRUCTIONS"),
+        "composed identity must be passed verbatim to --append-system-prompt",
+      );
+
+      // Identity must NOT also appear in the task argv when transported via flag.
+      const bodyHits = parts.filter((p) => p.includes("AGENT_APPEND_BODY")).length;
+      const callerHits = parts.filter((p) => p.includes("PER_CALL_INSTRUCTIONS")).length;
+      assert.equal(bodyHits, 1, "agent body must appear exactly once (after --append-system-prompt)");
+      assert.equal(callerHits, 1, "caller systemPrompt must appear exactly once");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("transports a composed identity through --system-prompt for system-prompt: replace (TODO-dd074bb7)", () => {
+    const root = mkdtempSync(join(tmpdir(), "ls-claude-cmd-replace-"));
+    try {
+      mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+      writeFileSync(
+        join(root, ".pi", "agents", "spm-replace.md"),
+        "---\nmodel: m\nsystem-prompt: replace\n---\nAGENT_REPLACE_BODY\n",
+        "utf8",
+      );
+      const spec = resolveLaunchSpec(
+        {
+          name: "X",
+          task: "REAL_TASK_TEXT",
+          agent: "spm-replace",
+          cwd: root,
+          systemPrompt: "PER_CALL_REPLACE",
+        },
+        {
+          sessionManager: {
+            getSessionFile: () => "/tmp/parent.jsonl",
+            getSessionId: () => "sess-test",
+            getSessionDir: () => "/tmp",
+          } as any,
+          cwd: "/tmp",
+        },
+      );
+      assert.equal(spec.identity, "AGENT_REPLACE_BODY\n\nPER_CALL_REPLACE");
+
+      const parts = buildClaudeCmdParts({
+        sentinelFile: "/tmp/s",
+        pluginDir: undefined,
+        model: spec.claudeModelArg,
+        identity: spec.identity,
+        systemPromptMode: spec.systemPromptMode,
+        resumeSessionId: spec.resumeSessionId,
+        effectiveThinking: spec.effectiveThinking,
+        effectiveTools: spec.effectiveTools,
+        task: spec.claudeTaskBody,
+      });
+      const flagIdx = parts.indexOf("--system-prompt");
+      assert.ok(flagIdx >= 0,
+        "system-prompt: replace must produce --system-prompt (not --append-system-prompt)");
+      assert.equal(parts.includes("--append-system-prompt"), false,
+        "replace mode must not emit --append-system-prompt");
+      assert.equal(
+        parts[flagIdx + 1],
+        shellEscape("AGENT_REPLACE_BODY\n\nPER_CALL_REPLACE"),
+        "composed identity must transport through --system-prompt with the same body+blank-line+caller composition",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("uses resolveLaunchSpec().claudeModelArg so provider-prefixed Claude models match headless behavior (v18 / review-v21 blocker)", () => {

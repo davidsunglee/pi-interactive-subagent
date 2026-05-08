@@ -251,4 +251,35 @@ describe("buildClaudeHeadlessArgs", () => {
     }
     assert.equal(args[args.length - 1], "the real task");
   });
+
+  it("transports a composed identity through --append-system-prompt without duplicating it in the task argv (TODO-dd074bb7)", () => {
+    const composed = "AGENT_BODY\n\nCALLER_PROMPT";
+    const args = buildClaudeHeadlessArgs(
+      { ...baseSpec, identity: composed, systemPromptMode: "append" },
+      "the real task",
+    );
+    const flagIdx = args.indexOf("--append-system-prompt");
+    assert.notEqual(flagIdx, -1, "append mode must emit --append-system-prompt");
+    assert.equal(args[flagIdx + 1], composed,
+      "composed identity must be passed verbatim to --append-system-prompt");
+    assert.equal(args.indexOf("--system-prompt"), -1,
+      "append mode must not also emit --system-prompt");
+    const bodyHits = args.filter((a) => a.includes("AGENT_BODY")).length;
+    const callerHits = args.filter((a) => a.includes("CALLER_PROMPT")).length;
+    assert.equal(bodyHits, 1, "agent body must appear exactly once (after --append-system-prompt)");
+    assert.equal(callerHits, 1, "caller systemPrompt must appear exactly once");
+  });
+
+  it("transports a composed identity through --system-prompt for system-prompt: replace (TODO-dd074bb7)", () => {
+    const composed = "AGENT_BODY_REPLACE\n\nCALLER_REPLACE";
+    const args = buildClaudeHeadlessArgs(
+      { ...baseSpec, identity: composed, systemPromptMode: "replace" },
+      "the real task",
+    );
+    const flagIdx = args.indexOf("--system-prompt");
+    assert.notEqual(flagIdx, -1, "replace mode must emit --system-prompt");
+    assert.equal(args[flagIdx + 1], composed);
+    assert.equal(args.indexOf("--append-system-prompt"), -1,
+      "replace mode must not also emit --append-system-prompt");
+  });
 });

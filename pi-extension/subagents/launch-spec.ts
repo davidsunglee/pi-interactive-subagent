@@ -610,7 +610,21 @@ export function resolveLaunchSpec(
     ? "Your FINAL assistant message should summarize what you accomplished."
     : "Your FINAL assistant message (before calling subagent_done or before the user exits) should summarize what you accomplished.";
 
-  const identity = agentDefs?.body ?? params.systemPrompt ?? null;
+  // Identity is composed from two sources, both trimmed and ignored when
+  // empty/whitespace-only:
+  //   1. agentDefs.body — the agent's base role/tone (from frontmatter body)
+  //   2. params.systemPrompt — task-specific instructions for this launch
+  // When both are present, the agent body comes first, then a blank line,
+  // then the caller's per-call systemPrompt. When only one is non-empty, it
+  // is used alone. When neither is non-empty, identity is null. The fix
+  // (TODO-dd074bb7) replaces the old precedence logic that silently dropped
+  // a caller-provided systemPrompt whenever the agent had a body.
+  const trimmedBody = agentDefs?.body?.trim() || null;
+  const trimmedSystemPrompt = params.systemPrompt?.trim() || null;
+  const identity =
+    trimmedBody && trimmedSystemPrompt
+      ? `${trimmedBody}\n\n${trimmedSystemPrompt}`
+      : (trimmedBody ?? trimmedSystemPrompt ?? null);
   const systemPromptMode = agentDefs?.systemPromptMode;
   const identityInSystemPrompt = !!(systemPromptMode && identity);
   const roleBlock = identity && !identityInSystemPrompt ? `\n\n${identity}` : "";
