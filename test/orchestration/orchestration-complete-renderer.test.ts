@@ -155,6 +155,74 @@ describe("orchestration_complete renderer — parallel expanded", () => {
   });
 });
 
+describe("orchestration_complete renderer — bg wrap", () => {
+  const markerTheme = {
+    fg: (_color: string, text: string) => text,
+    bg: (color: string, text: string) => `__BG_${color}__${text}__/BG__`,
+    bold: (text: string) => text,
+  };
+
+  it("wraps aggregate output in toolSuccessBg when isError is falsy", () => {
+    const renderer = getRenderer();
+    const message = {
+      details: {
+        mode: "serial",
+        results: [completedTask],
+        isError: false,
+        orchestrationId: "test-id",
+      },
+    };
+    const output = renderer(message, { expanded: false }, markerTheme).render(80).join("\n");
+    assert.ok(
+      output.includes("__BG_toolSuccessBg__"),
+      `expected toolSuccessBg marker in:\n${output}`,
+    );
+    assert.ok(
+      !output.includes("__BG_toolErrorBg__"),
+      `did not expect toolErrorBg marker in:\n${output}`,
+    );
+  });
+
+  it("wraps aggregate output in toolErrorBg when isError is true", () => {
+    const renderer = getRenderer();
+    const message = {
+      details: {
+        mode: "parallel",
+        results: [completedTask, failedTask],
+        isError: true,
+        orchestrationId: "test-id",
+      },
+    };
+    const output = renderer(message, { expanded: false }, markerTheme).render(80).join("\n");
+    assert.ok(
+      output.includes("__BG_toolErrorBg__"),
+      `expected toolErrorBg marker in:\n${output}`,
+    );
+    assert.ok(
+      !output.includes("__BG_toolSuccessBg__"),
+      `did not expect toolSuccessBg marker in:\n${output}`,
+    );
+  });
+
+  it("preserves leading blank-line spacer outside the bg wrap", () => {
+    const renderer = getRenderer();
+    const message = {
+      details: {
+        mode: "serial",
+        results: [completedTask],
+        isError: false,
+        orchestrationId: "test-id",
+      },
+    };
+    const lines: string[] = renderer(message, { expanded: false }, markerTheme).render(80);
+    assert.equal(lines[0], "", "first line must remain a blank spacer outside the bg wrap");
+    assert.ok(
+      !lines[0].includes("__BG_"),
+      "leading spacer must not be inside the colored block",
+    );
+  });
+});
+
 describe("orchestration_complete renderer — backwards compat (no mode in details)", () => {
   it("defaults to serial layout when mode is absent", () => {
     const renderer = getRenderer();

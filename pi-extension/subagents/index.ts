@@ -2717,7 +2717,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           theme,
           isError: details.isError,
         });
-        return ["", ...component.render(width)];
+        const bgFn = !details.isError
+          ? (text: string) => theme.bg("toolSuccessBg", text)
+          : (text: string) => theme.bg("toolErrorBg", text);
+        const box = new Box(1, 1, bgFn);
+        box.addChild(component);
+        return ["", ...box.render(width)];
       },
     };
   });

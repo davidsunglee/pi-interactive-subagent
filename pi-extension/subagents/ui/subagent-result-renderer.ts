@@ -79,7 +79,13 @@ export function createSubagentResultRenderer(
           expanded: options.expanded,
           theme,
         });
-        return ["", ...component.render(width)];
+        const bgFn =
+          exitCode === 0
+            ? (text: string) => theme.bg("toolSuccessBg", text)
+            : (text: string) => theme.bg("toolErrorBg", text);
+        const box = new Box(1, 1, bgFn);
+        box.addChild(component);
+        return ["", ...box.render(width)];
       }
 
       // Pane / legacy shape: original box rendering

@@ -54,6 +54,36 @@ function renderToString(mode: RichMode, expanded: boolean): string {
   return component.render(80).join("\n");
 }
 
+describe("renderRichSubagentResult — sync renderResult regression guard", () => {
+  it("does not itself apply toolSuccessBg/toolErrorBg backgrounds (avoids double-wrap with framework auto-wrap)", () => {
+    const markerTheme = {
+      fg: (_color: string, text: string) => text,
+      bg: (color: string, text: string) => `__BG_${color}__${text}__/BG__`,
+      bold: (text: string) => text,
+    };
+    for (const mode of ["serial", "parallel"] as RichMode[]) {
+      for (const expanded of [false, true]) {
+        const component = renderRichSubagentResult({
+          mode,
+          results: toTaskRows([completedTask, runningTask]),
+          expanded,
+          theme: markerTheme,
+          isError: false,
+        });
+        const output = component.render(80).join("\n");
+        assert.ok(
+          !output.includes("__BG_toolSuccessBg__"),
+          `renderRichSubagentResult must not apply toolSuccessBg (mode=${mode}, expanded=${expanded}):\n${output}`,
+        );
+        assert.ok(
+          !output.includes("__BG_toolErrorBg__"),
+          `renderRichSubagentResult must not apply toolErrorBg (mode=${mode}, expanded=${expanded}):\n${output}`,
+        );
+      }
+    }
+  });
+});
+
 describe("renderRichSubagentResult", () => {
   it("returns a Component whose render(80) is callable", () => {
     const component = renderRichSubagentResult({
