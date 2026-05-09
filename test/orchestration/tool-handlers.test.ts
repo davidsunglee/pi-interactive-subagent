@@ -1,7 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { initTheme } from "@mariozechner/pi-coding-agent";
 import { registerOrchestrationTools, toPublicResults } from "../../pi-extension/orchestration/tool-handlers.ts";
 import type { LauncherDeps, OrchestrationResult } from "../../pi-extension/orchestration/types.ts";
+
+initTheme();
 
 function createMockApi() {
   const tools: any[] = [];
@@ -277,6 +280,62 @@ describe("registerOrchestrationTools", () => {
     assert.equal(out.details.results[0].index, 0);
     assert.equal(out.details.results[1].index, 1);
     assert.equal(out.details.results[0].state, "completed");
+  });
+
+  it("sync renderResult paths return unwrapped rich components to avoid framework double backgrounds", () => {
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => noopDeps, () => true);
+    const markerTheme = {
+      fg: (_color: string, text: string) => text,
+      bg: (color: string, text: string) => `__BG_${color}__${text}__/BG__`,
+      bold: (text: string) => text,
+    };
+    const details = {
+      isError: false,
+      results: [
+        {
+          name: "task-one",
+          index: 0,
+          state: "completed",
+          finalMessage: "Done!",
+          transcript: [
+            {
+              role: "assistant",
+              content: [
+                { type: "toolCall", id: "call-bash", name: "bash", arguments: { command: "ls -la" } },
+              ],
+            },
+          ],
+          usage: {
+            input: 1000,
+            output: 500,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.001,
+            contextTokens: 0,
+            turns: 1,
+          },
+        },
+      ],
+    };
+
+    for (const toolName of ["subagent_run_serial", "subagent_run_parallel"]) {
+      const tool = tools.find((t) => t.name === toolName);
+      assert.ok(tool, `${toolName} should be registered`);
+      for (const expanded of [false, true]) {
+        const component = tool.renderResult({ details }, { expanded }, markerTheme);
+        const output = component.render(80).join("\n");
+        assert.ok(output.includes("task-one"), `${toolName} should render rich task output`);
+        assert.ok(
+          !output.includes("__BG_toolSuccessBg__"),
+          `${toolName} renderResult must not apply toolSuccessBg (expanded=${expanded}):\n${output}`,
+        );
+        assert.ok(
+          !output.includes("__BG_toolErrorBg__"),
+          `${toolName} renderResult must not apply toolErrorBg (expanded=${expanded}):\n${output}`,
+        );
+      }
+    }
   });
 
   it("subagent_run_parallel short-circuits with self-spawn-blocked when ANY task targets the current agent", async () => {
