@@ -1786,11 +1786,19 @@ const registryEmitter = (payload: { kind: string; [k: string]: any }) => {
   if (!piForRegistry) return;
   if (payload.kind === ORCHESTRATION_COMPLETE_KIND) {
     updateWidget();
+    const lines: string[] = [
+      `Orchestration "${payload.orchestrationId}" completed ` +
+        `(${payload.results.length} task(s), isError=${payload.isError}).`,
+    ];
+    for (const r of payload.results) {
+      lines.push("");
+      lines.push(`Task "${r.name}" (${r.state}, exit=${r.exitCode}, ${r.elapsedMs}ms):`);
+      lines.push("");
+      lines.push(r.finalMessage ?? "");
+    }
     piForRegistry.sendMessage({
       customType: "orchestration_complete",
-      content:
-        `Orchestration "${payload.orchestrationId}" completed ` +
-        `(${payload.results.length} task(s), isError=${payload.isError}).`,
+      content: lines.join("\n"),
       display: true,
       details: payload,
     }, { triggerTurn: true, deliverAs: "steer" });
