@@ -387,6 +387,114 @@ describe("registerOrchestrationTools", () => {
     assert.match(out.content[0].text, /agent-c agent/);
     assert.equal(out.details.error, "self-spawn blocked");
   });
+
+  it("subagent_run_serial (wait:true) includes full finalMessage in content without truncation", async () => {
+    const multiLineFixture = `STATUS: DONE_WITH_CONCERNS
+
+## Completed
+- Implemented foo
+- Added tests for bar
+
+## Tests
+- 12 new test cases
+- All passing
+
+## Concerns
+- Memory usage may be elevated`;
+
+    const multiLineDeps: LauncherDeps = {
+      async launch(task) {
+        return { id: "x", name: task.name ?? "step", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return {
+          name: handle.name,
+          finalMessage: multiLineFixture,
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: 100,
+          state: "completed",
+        };
+      },
+    };
+
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => multiLineDeps, () => true);
+    const serial = tools.find((t) => t.name === "subagent_run_serial");
+    const out = await serial.execute(
+      "call-content-sync",
+      {
+        tasks: [
+          { name: "task-one", agent: "x", task: "t1" },
+          { name: "task-two", agent: "x", task: "t2" },
+        ],
+      },
+      new AbortController().signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+
+    const contentText = out.content[0].text;
+    assert.match(contentText, /STATUS: DONE_WITH_CONCERNS/, "Should include the full status line");
+    assert.match(contentText, /## Completed\n- Implemented foo/, "Should include multi-line completed section without truncation");
+    assert.match(contentText, /serial orchestration: 2 task\(s\), isError=false/, "Should include aggregate header");
+    assert(contentText.indexOf("task-one") < contentText.indexOf("task-two"), "Tasks should appear in input order");
+    assert.equal(out.details.results.length, 2, "Should have 2 results in details");
+  });
+
+  it("subagent_run_parallel (wait:true) includes full finalMessage in content without truncation", async () => {
+    const multiLineFixture = `STATUS: DONE_WITH_CONCERNS
+
+## Completed
+- Implemented foo
+- Added tests for bar
+
+## Tests
+- 12 new test cases
+- All passing
+
+## Concerns
+- Memory usage may be elevated`;
+
+    const multiLineDeps: LauncherDeps = {
+      async launch(task) {
+        return { id: "x", name: task.name ?? "step", startTime: Date.now() };
+      },
+      async waitForCompletion(handle) {
+        return {
+          name: handle.name,
+          finalMessage: multiLineFixture,
+          transcriptPath: null,
+          exitCode: 0,
+          elapsedMs: 100,
+          state: "completed",
+        };
+      },
+    };
+
+    const { api, tools } = createMockApi();
+    registerOrchestrationTools(api, () => multiLineDeps, () => true);
+    const parallel = tools.find((t) => t.name === "subagent_run_parallel");
+    const out = await parallel.execute(
+      "call-content-sync-p",
+      {
+        tasks: [
+          { name: "p-one", agent: "x", task: "t1" },
+          { name: "p-two", agent: "x", task: "t2" },
+        ],
+      },
+      new AbortController().signal,
+      () => {},
+      { sessionManager: {} as any, cwd: "/tmp" },
+    );
+
+    const contentText = out.content[0].text;
+    assert.match(contentText, /STATUS: DONE_WITH_CONCERNS/, "Should include the full status line");
+    assert.match(contentText, /## Completed\n- Implemented foo/, "Should include multi-line completed section without truncation");
+    assert.match(contentText, /parallel orchestration: 2 task\(s\), isError=false/, "Should include aggregate header");
+    assert(contentText.indexOf("p-one") < contentText.indexOf("p-two"), "Tasks should appear in input order");
+    assert.equal(out.details.results.length, 2, "Should have 2 results in details");
+  });
 });
 
 describe("toPublicResults", () => {

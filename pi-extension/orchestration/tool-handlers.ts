@@ -458,14 +458,13 @@ export function toPublicResults(results: OrchestrationResult[]): OrchestratedTas
 }
 
 function summarize(mode: "serial" | "parallel", results: any[], isError: boolean): string {
-  const lines = [`${mode} orchestration: ${results.length} task(s), isError=${isError}`];
+  const lines: string[] = [`${mode} orchestration: ${results.length} task(s), isError=${isError}`];
   for (const r of results) {
-    lines.push(`- ${r.name}: exit=${r.exitCode} (${r.elapsedMs}ms) — ${firstLine(r.finalMessage)}`);
+    lines.push("");
+    lines.push(`Task "${r.name}" (${r.state}, exit=${r.exitCode}, ${r.elapsedMs}ms):`);
+    lines.push("");
+    lines.push(r.finalMessage ?? "");
   }
   return lines.join("\n");
 }
 
-function firstLine(s: string): string {
-  const line = (s ?? "").split("\n").find((l) => l.trim()) ?? "";
-  return line.length > 200 ? line.slice(0, 200) + "…" : line;
-}
